@@ -17,7 +17,7 @@ jobs:
       - name: Install Dependencies
         run: |
           dkp-pacman -Sy --noconfirm
-          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-curl switch-jansson --noconfirm
+          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-curl switch-jansson switch-audin --noconfirm
 
       - name: Download Font
         run: |
@@ -65,7 +65,7 @@ jobs:
           #define VOICE_SAMPLE_RATE 16000
           #define VOICE_MAX_SECONDS 10
 
-          // Hardcoded API key – you provided it!
+          // Hardcoded API key
           const char* API_KEY = "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg";
 
           typedef struct {
@@ -197,7 +197,6 @@ jobs:
               SDL_RenderPresent(renderer);
           }
 
-          // Voice recording (simplified: direct audio buffer capture)
           int recordVoice(u8* buffer, int maxBytes) {
               if (R_FAILED(audinInitialize())) return -1;
               u32 sampleRate = VOICE_SAMPLE_RATE;
@@ -412,11 +411,9 @@ jobs:
                   u64 kDown = padGetButtonsDown(&pad);
                   u64 kHeld = padGetButtons(&pad);
 
-                  // Scroll with D-pad and left stick
                   int scrollDelta = 0;
                   if (kDown & HidNpadButton_Down || pad.lk_LY > 20000) scrollDelta = 30;
                   if (kDown & HidNpadButton_Up || pad.lk_LY < -20000) scrollDelta = -30;
-                  // Fast scroll with right stick
                   if (pad.rk_LY > 20000) scrollDelta = 60;
                   if (pad.rk_LY < -20000) scrollDelta = -60;
                   scrollOffset += scrollDelta;
@@ -598,7 +595,7 @@ jobs:
 
       - name: Create NSP
         run: |
-          echo '{"name":"Gemini for Switch","author":"amirxklazer","version":"1.0.0","title_id":"0100ABCD12340000","display_version":"1.0.0"}' > control.json
+          echo '{"name":"Gemini","author":"Google LLC","version":"1.0.0","title_id":"0100ABCD12340000","display_version":"1.0.0"}' > control.json
           npdmtool control.json main.npdm control.nacp
           nspBuild -t 0100ABCD12340000 -c control.nacp -i icon.jpg -o GeminiSwitch.nsp GeminiSwitch.nro main.npdm
 
