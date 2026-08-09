@@ -13,22 +13,18 @@ jobs:
     container: devkitpro/devkita64:latest
     
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      
-    - name: Setup directories
+    - uses: actions/checkout@v4
+
+    - name: Setup
       run: |
-        mkdir -p romfs switch/GeminiSwitch build exefs
-        
-    - name: Download Roboto font
+        mkdir -p romfs switch/GeminiSwitch exefs
+
+    - name: Download font
+      run: wget -qO romfs/Roboto-Regular.ttf "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf"
+
+    - name: Create source code
       run: |
-        wget -q "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" \
-          -O romfs/Roboto-Regular.ttf || curl -sL "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" -o romfs/Roboto-Regular.ttf
-        ls -la romfs/
-        
-    - name: Create main.c source file
-      run: |
-        cat > main.c << 'EOF'
+        cat > main.c << 'ENDOFFILE'
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
@@ -38,320 +34,217 @@ jobs:
         #include <curl/curl.h>
         #include <jansson.h>
 
-        #define MAX_SESSIONS 10
-        #define MAX_MESSAGES 50
-        #define MAX_MSG_LEN 4096
+        #define MAX_SESS 10
+        #define MAX_MSG 50
+        #define MAX_LEN 4096
         #define MAX_PRESETS 20
-        #define SCREEN_WIDTH 1280
-        #define SCREEN_HEIGHT 720
-        #define FONT_SIZE 22
-        #define API_KEY "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
-        #define API_URL "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        #define W 1280
+        #define H 720
+        #define FS 22
+        #define KEY "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
+        #define URL "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-        static const char* PRESETS[MAX_PRESETS] = {
-            "Hello! How are you today?",
-            "What is artificial intelligence?",
-            "Explain quantum computing simply",
-            "Write a short poem about space",
-            "What are the benefits of exercise?",
-            "Tell me an interesting fact",
-            "Explain how the internet works",
-            "What is machine learning?",
-            "Give me a coding tip",
-            "Describe the solar system",
-            "What makes a good leader?",
-            "Explain blockchain technology",
-            "Recommend a good book",
-            "How do vaccines work?",
-            "What is climate change?",
-            "Explain neural networks",
-            "Tell me a joke",
-            "What is the meaning of life?",
-            "How do I stay motivated?",
-            "Give me productivity tips"
+        const char* PRESETS[MAX_PRESETS] = {
+          "Hello! How are you?", "What is AI?", "Explain quantum computing",
+          "Write a poem about space", "Benefits of exercise?", "Interesting fact?",
+          "How does internet work?", "What is ML?", "Coding tip please",
+          "Describe solar system", "Good leader qualities?", "Blockchain explained",
+          "Book recommendation", "How vaccines work?", "Climate change?",
+          "Neural networks", "Tell me a joke", "Meaning of life?",
+          "Stay motivated tips", "Productivity advice"
         };
 
-        typedef struct { char text[4096]; int is_user; } Message;
-        typedef struct {
-            Message msgs[50]; int count; char title[64];
-        } Session;
-        typedef struct {
-            Session sessions[10]; int cur, total, preset, loading;
-            char status[256];
-        } AppState;
+        typedef struct { char t[4096]; int u; } Msg;
+        typedef struct { Msg m[50]; int n; char title[64]; } Sess;
+        typedef struct { Sess s[10]; int cur,total,preset,load; char st[256]; } App;
 
-        static AppState app;
+        static App app;
         static SDL_Window *win;
-        static SDL_Renderer *rend;
-        static TTF_Font *font;
-        static int running = 1;
+        static SDL_Renderer *rd;
+        static TTF_Font *fnt;
+        static int run = 1;
 
-        size_t write_cb(void *c, size_t s, size_t n, void *u) {
-            strncat((char*)u, c, s*n); return s*n;
-        }
+        size_t wcb(void *c, size_t s, size_t n, void *u) { strncat((char*)u,c,s*n); return s*n; }
 
-        int call_api(const char *msg, char *resp) {
-            CURL *curl = curl_easy_init();
-            if(!curl) return -1;
-            
-            char url[512], post[8192];
-            snprintf(url, sizeof(url), "%s?key=%s", API_URL, API_KEY);
-            snprintf(post, sizeof(post), 
-                "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}", msg);
-            
-            resp[0] = 0;
-            struct curl_slist *h = curl_slist_append(NULL, "Content-Type: application/json");
-            curl_easy_setopt(curl, CURLOPT_URL, url);
-            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post);
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
-            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-            curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
-            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-            
-            CURLcode res = curl_easy_perform(curl);
-            curl_slist_free_all(h);
-            curl_easy_cleanup(curl);
-            
-            if(res != CURLE_OK) { snprintf(resp, 4096, "Error: %s", curl_easy_strerror(res)); return -1; }
-            
-            json_error_t err;
-            json_t *root = json_loads(resp, 0, &err);
-            if(!root) return -1;
-            
-            json_t *cand = json_object_get(root, "candidates");
-            if(cand && json_array_size(cand) > 0) {
-                json_t *cont = json_object_get(json_array_get(cand,0), "content");
-                if(cont) {
-                    json_t *parts = json_object_get(cont, "parts");
-                    if(parts && json_array_size(parts) > 0) {
-                        const char *txt = json_string_value(json_object_get(json_array_get(parts,0),"text"));
-                        if(txt) { strncpy(resp, txt, 4095); resp[4095]=0; json_decref(root); return 0; }
-                    }
-                }
+        int api(const char *q, char *r) {
+          CURL *curl = curl_easy_init();
+          if(!curl) return -1;
+          char u[512], p[8192];
+          snprintf(u,sizeof(u),"%s?key=%s",URL,KEY);
+          snprintf(p,sizeof(p),"{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}",q);
+          r[0]=0;
+          struct curl_slist *h = curl_slist_append(NULL,"Content-Type: application/json");
+          curl_easy_setopt(curl,CURLOPT_URL,u);
+          curl_easy_setopt(curl,CURLOPT_POSTFIELDS,p);
+          curl_easy_setopt(curl,CURLOPT_HTTPHEADER,h);
+          curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,wcb);
+          curl_easy_setopt(curl,CURLOPT_WRITEDATA,r);
+          curl_easy_setopt(curl,CURLOPT_TIMEOUT,30L);
+          CURLcode res = curl_easy_perform(curl);
+          curl_slist_free_all(h);
+          curl_easy_cleanup(curl);
+          if(res!=CURLE_OK) { snprintf(r,4096,"Err:%s",curl_easy_strerror(res)); return -1; }
+          json_error_t e; json_t *root=json_loads(r,0,&e);
+          if(!root) return -1;
+          json_t *cand=json_object_get(root,"candidates");
+          if(cand&&json_array_size(cand)>0) {
+            json_t *cont=json_object_get(json_array_get(cand,0),"content");
+            if(cont) {
+              json_t *parts=json_object_get(cont,"parts");
+              if(parts&&json_array_size(parts)>0) {
+                const char *txt=json_string_value(json_object_get(json_array_get(parts,0),"text"));
+                if(txt) { strncpy(r,txt,4095); r[4095]=0; json_decref(root); return 0; }
+              }
             }
-            json_decref(root);
-            return 0;
+          }
+          json_decref(root);
+          return 0;
         }
 
-        void add_msg(int idx, const char *txt, int user) {
-            Session *s = &app.sessions[idx];
-            if(s->count < 50) {
-                strncpy(s->msgs[s->count].text, txt, 4095);
-                s->msgs[s->count].is_user = user;
-                s->count++;
-            }
+        void add(int i,const char *t,int u) {
+          Sess *s=&app.s[i];
+          if(s->n<50) { strncpy(s->m[s->n].t,t,4095); s->m[s->n].u=u; s->n++; }
         }
 
-        void init_app() {
-            memset(&app,0,sizeof(app));
-            app.total=1; app.cur=0; app.preset=0; app.loading=0;
-            strcpy(app.sessions[0].title,"Chat 1");
-            strcpy(app.status,"Press A to send question");
-        }
+        void init() { memset(&app,0,sizeof(app)); app.total=1; strcpy(app.s[0].title,"Chat 1"); strcpy(app.st,"A to send"); }
 
-        void draw_text(const char *t, int x, int y, SDL_Color c) {
-            if(!font||!t) return;
-            SDL_Surface *sf = TTF_RenderUTF8_Blended(font,t,c);
-            if(sf) {
-                SDL_Texture *tx = SDL_CreateTextureFromSurface(rend,sf);
-                if(tx) { SDL_Rect r={x,y,sf->w,sf->h}; SDL_Copy(rend,tx,NULL,r); SDL_DestroyTexture(tx); }
-                SDL_FreeSurface(sf);
-            }
+        void txt(const char *t,int x,int y,SDL_Color c) {
+          if(!fnt||!t) return;
+          SDL_Surface *sf=TTF_RenderUTF8_Blended(fnt,t,c);
+          if(sf) { SDL_Texture *tx=SDL_CreateTextureFromSurface(rd,sf);
+            if(tx) { SDL_Rect r={x,y,sf->w,sf->h}; SDL_RenderCopy(rd,tx,NULL,r); SDL_DestroyTexture(tx); }
+            SDL_FreeSurface(sf); }
         }
 
         void render() {
-            SDL_SetRenderDrawColor(rend,30,30,46,255);
-            SDL_RenderClear(rend);
-            
-            SDL_SetRenderDrawColor(rend,49,50,68,255);
-            SDL_Rect hdr={0,0,1280,60};
-            SDL_RenderFillRect(rend,&hdr);
-            
-            SDL_Color white={255,255,255,255}, cyan={79,172,254,255};
-            char t[128];
-            snprintf(t,sizeof(t),"Gemini AI - Session %d/%d", app.cur+1, app.total);
-            draw_text(t,20,18,white);
-            
-            Session *s=&app.sessions[app.cur];
-            int y=80;
-            for(int i=0;i<s->count&&y<540;i++) {
-                Message *m=&s->msgs[i];
-                int bx=m->is_user?760:20;
-                SDL_Color bc={49,50,68,255}, tc={88,166,255,255};
-                if(!m->is_user) { bc=(SDL_Color){69,71,90,255}; tc=(SDL_Color){139,233,253,255}; }
-                
-                SDL_SetRenderDrawColor(rend,bc.r,bc.g,bc.b,255);
-                SDL_Rect br={bx,y,500,80};
-                SDL_RenderFillRect(rend,&br);
-                
-                char d[200]; strncpy(d,m->text,195); d[195]=0;
-                if(strlen(m->text)>195) strcat(d,"...");
-                draw_text(d,bx+15,y+15,tc);
-                draw_text(m->is_user?"You":"Gemini",bx+15,y+55,white);
-                y+=95;
-            }
-            
-            SDL_SetRenderDrawColor(rend,40,42,58,255);
-            SDL_Rect pa={0,550,1280,170};
-            SDL_RenderFillRect(rend,&pa);
-            SDL_SetRenderDrawColor(rend,79,172,254,255);
-            SDL_RenderDrawLine(rend,0,550,1280,550);
-            
-            snprintf(t,sizeof(t),"[%d/%d] %s",app.preset+1,MAX_PRESETS,PRESETS[app.preset]);
-            draw_text(t,20,565,cyan);
-            draw_text("D-Pad:Select A:Send Y:New L/R:Switch ZL:Import ZR:Export +:Exit",20,600,white);
-            
-            if(app.loading) {
-                SDL_Color yel={241,250,140,255};
-                draw_text("Waiting for Gemini...",20,635,yel);
-            } else {
-                draw_text(app.status,20,635,white);
-            }
-            
-            SDL_RenderPresent(rend);
+          SDL_SetRenderDrawColor(rd,30,30,46,255); SDL_RenderClear(rd);
+          SDL_SetRenderDrawColor(rd,49,50,68,255); SDL_Rect h={0,0,W,60}; SDL_RenderFillRect(rd,&h);
+          SDL_Color wh={255,255,255,255},cy={79,172,254,255};
+          char b[128]; snprintf(b,sizeof(b),"Gemini AI - Session %d/%d",app.cur+1,app.total); txt(b,20,18,wh);
+          Sess *s=&app.s[app.cur]; int y=80;
+          for(int i=0;i<s->n&&y<540;i++) {
+            Msg *m=&s->m[i]; int bx=m->u?760:20;
+            SDL_Color bc=m->u?(SDL_Color){49,50,68,255}:(SDL_Color){69,71,90,255};
+            SDL_Color tc=m->u?(SDL_Color){88,166,255,255}:(SDL_Color){139,233,253,255};
+            SDL_SetRenderDrawColor(rd,bc.r,bc.g,bc.b,255); SDL_Rect br={bx,y,500,80}; SDL_RenderFillRect(rd,&br);
+            char d[200]; strncpy(d,m->t,195); d[195]=0; if(strlen(m->t)>195) strcat(d,"...");
+            txt(d,bx+15,y+15,tc); txt(m->u?"You":"Gemini",bx+15,y+55,wh); y+=95;
+          }
+          SDL_SetRenderDrawColor(rd,40,42,58,255); SDL_Rect pa={0,550,W,170}; SDL_RenderFillRect(rd,&pa);
+          SDL_SetRenderDrawColor(rd,79,172,254,255); SDL_RenderDrawLine(rd,0,550,W,550);
+          snprintf(b,sizeof(b),"[%d/%d] %s",app.preset+1,MAX_PRESETS,PRESETS[app.preset]); txt(b,565,cy);
+          txt("D-Pad:Select A:Send Y:New L/R:Sess ZL:Import ZR:Exp +:Exit",600,wh);
+          if(app.loading) { SDL_Color yl={241,250,140,255}; txt("Waiting for Gemini...",635,yl); }
+          else txt(app.st,635,wh);
+          SDL_RenderPresent(rd);
         }
 
-        void handle_input() {
-            hidScanInput();
-            u64 k=hidKeysDown(CONTROLLER_PAND_AUTO);
-            
-            if(k&KEY_DUP) { app.preset=(app.preset-1+MAX_PRESETS)%MAX_PRESETS; snprintf(app.status,sizeof(app.status),"Selected: %s",PRESETS[app.preset]); }
-            if(k&KEY_DDOWN) { app.preset=(app.preset+1)%MAX_PRESETS; snprintf(app.status,sizeof(app.status),"Selected: %s",PRESETS[app.preset]); }
-            if(k&KEY_DLEFT) { app.preset=(app.preset-5+MAX_PRESETS)%MAX_PRESETS; }
-            if(k&KEY_DRIGHT) { app.preset=(app.preset+5)%MAX_PRESETS; }
-            
-            if(k&KEY_A&&!app.loading) {
-                add_msg(app.cur,PRESETS[app.preset],1);
-                app.loading=1; strcpy(app.status,"Sending to Gemini...");
-                char r[4096]={0};
-                call_api(PRESETS[app.preset],r);
-                if(strlen(r)>0) add_msg(app.cur,r,0);
-                else add_msg(app.cur,"No response.",0);
-                app.loading=0; strcpy(app.status,"Done");
-            }
-            
-            if(k&KEY_Y&&!app.loading&&app.total<MAX_SESSIONS) {
-                app.total++; app.cur=app.total-1;
-                snprintf(app.sessions[app.cur].title,64,"Chat %d",app.total);
-                snprintf(app.status,sizeof(app.status),"New session created");
-            }
-            
-            if(k&KEY_L&&!app.loading) { app.cur=(app.cur-1+app.total)%app.total; snprintf(app.status,sizeof(app.status),"Session %d",app.cur+1); }
-            if(k&KEY_R&&!app.loading) { app.cur=(app.cur+1)%app.total; snprintf(app.status,sizeof(app.status),"Session %d",app.cur+1); }
-            
-            if(k&KEY_ZL&&!app.loading) {
-                FILE*f=fopen("switch/GeminiSwitch/import.txt","r");
-                if(f) { char b[4096]={0}; if(fgets(b,4095,f)) { b[strcspn(b,"\n")]=0; if(*b) { add_msg(app.cur,b,1); app.loading=1; char r[4096]={0}; call_api(b,r); if(*r)add_msg(app.cur,r,0); app.loading=0; }} fclose(f); strcpy(app.status,"Imported"); }
-                else strcpy(app.status,"No import.txt");
-            }
-            
-            if(k&KEY_ZR&&!app.loading) {
-                FILE*f=fopen("switch/GeminiSwitch/chat_export.txt","w");
-                if(f) { Session*s=&app.sessions[app.cur]; fprintf(f,"=== Export ===\n"); for(int i=0;i<s->count;i++) fprintf(f,"[%s]: %s\n\n",s->msgs[i].is_user?"User":"Gemini",s->msgs[i].text); fclose(f); strcpy(app.status,"Exported"); }
-                else strcpy(app.status,"Export failed");
-            }
-            
-            if(k&KEY_PLUS) running=0;
+        void input() {
+          hidScanInput(); u64 k=hidKeysDown(CONTROLLER_PAND_AUTO);
+          if(k&KEY_DUP) { app.preset=(app.preset-1+MAX_PRESETS)%MAX_PRESETS; snprintf(app.st,sizeof(app.st),"%s",PRESETS[app.preset]); }
+          if(k&KEY_DDOWN) { app.preset=(app.preset+1)%MAX_PRESETS; snprintf(app.st,sizeof(app.st),"%s",PRESETS[app.preset]); }
+          if(k&KEY_DLEFT) app.preset=(app.preset-5+MAX_PRESETS)%MAX_PRESETS;
+          if(k&KEY_DRIGHT) app.preset=(app.preset+5)%MAX_PRESETS;
+          if(k&KEY_A&&!app.loading) {
+            add(app.cur,PRESETS[app.preset],1); app.loading=1; strcpy(app.st,"Sending...");
+            char r[4096]={0}; api(PRESETS[app.preset],r);
+            if(strlen(r)>0) add(app.cur,r,0); else add(app.cur,"No response.",0);
+            app.loading=0; strcpy(app.st,"Done");
+          }
+          if(k&KEY_Y&&!app.loading&&app.total<MAX_SESS) { app.total++; app.cur=app.total-1; snprintf(app.s[app.cur].title,64,"Chat %d",app.total); strcpy(app.st,"New session"); }
+          if(k&KEY_L&&!app.loading) { app.cur=(app.cur-1+app.total)%app.total; snprintf(app.st,sizeof(app.st),"Sess %d",app.cur+1); }
+          if(k&KEY_R&&!app.loading) { app.cur=(app.cur+1)%app.total; snprintf(app.st,sizeof(app.st),"Sess %d",app.cur+1); }
+          if(k&KEY_ZL&&!app.loading) {
+            FILE *fp=fopen("switch/GeminiSwitch/import.txt","r");
+            if(fp) { char b[4096]={0}; if(fgets(b,4095,fp)) { b[strcspn(b,"\n")]=0; if(*b){add(app.cur,b,1);app.loading=1;char r[4096]={0};api(b,r);if(*r)add(app.cur,r,0);app.loading=0;}} fclose(fp);strcpy(app.st,"OK"); }
+            else strcpy(app.st,"No file");
+          }
+          if(k&KEY_ZR&&!app.loading) {
+            FILE *fp=fopen("switch/GeminiSwitch/chat_export.txt","w");
+            if(fp) { Sess*s=&app.s[app.cur]; fprintf(f,"===Export===\n");for(int i=0;i<s->n;i++)fprintf(fp,"[%s]:%s\n\n",s->m[i].u?"User":"Gem",s->m[i].t);fclose(fp);strcpy(app.st,"Exported"); }
+            else strcpy(app.st,"Fail");
+          }
+          if(k&KEY_PLUS) run=0;
         }
 
         int main() {
-            romfsInit();
-            socketInitializeDefault();
-            padConfigureInput(1,PadNpadJoyConPair);
-            
-            if(SDL_Init(SDL_INIT_VIDEO)<0) return -1;
-            if(TTF_Init()<0) { SDL_Quit(); return -1; }
-            
-            font=TTF_OpenFont("romfs:/Roboto-Regular.ttf",FONT_SIZE);
-            if(!font) { TTF_Quit(); SDL_Quit(); return -1; }
-            
-            win=SDL_CreateWindow("Gemini",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,1280,720,SDL_WINDOW_SHOWN);
-            if(!win) { TTF_CloseFont(font); TTF_Quit(); SDL_Quit(); return -1; }
-            
-            rend=SDL_CreateRenderer(win,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
-            if(!rend) { SDL_DestroyWindow(win); TTF_CloseFont(font); TTF_Quit(); SDL_Quit(); return -1; }
-            
-            init_app();
-            while(appletMainLoop()) { handle_input(); render(); if(!running) break; SDL_Delay(16); }
-            
-            SDL_DestroyRenderer(rend); SDL_DestroyWindow(win); TTF_CloseFont(font); TTF_Quit(); SDL_Quit(); socketExit(); romfsExit();
-            return 0;
+          romfsInit(); socketInitializeDefault(); padConfigureInput(1,PadNpadJoyConPair);
+          if(SDL_Init(SDL_INIT_VIDEO)<0) return 1;
+          if(TTF_Init()<0) { SDL_Quit(); return 1; }
+          fnt=TTF_OpenFont("romfs:/Roboto-Regular.ttf",FS);
+          if(!fnt) { TTF_Quit(); SDL_Quit(); return 1; }
+          win=SDL_CreateWindow("Gemini",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,W,H,SDL_WINDOW_SHOWN);
+          if(!win) { TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); return 1; }
+          rd=SDL_CreateRenderer(win,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
+          if(!rd) { SDL_DestroyWindow(win); TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); return 1; }
+          init();
+          while(appletMainLoop()) { input(); render(); if(!run) break; SDL_Delay(16); }
+          SDL_DestroyRenderer(rd); SDL_DestroyWindow(win); TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); socketExit(); romfsExit();
+          return 0;
         }
-        EOF
-        
-    - name: Create Makefile with proper tabs
+        ENDOFFILE
+
+    - name: Create Makefile
       run: |
-        printf '%s\n' \
-        'TARGET := GeminiSwitch' \
-        'BUILD := build' \
-        'SOURCES := .' \
-        'ROMFS := romfs' \
-        '' \
-        'ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec' \
-        'CFLAGS := -g -Wall -O2 -ffunction-sections $(ARCH) -D__SWITCH__' \
-        '' \
-        'DEVKITPRO ?= /opt/devkitpro' \
-        'SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch' \
-        '' \
-        'INCLUDE := -I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2 -I$(DEVKITPRO)/libnx/include' \
-        'LIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx' \
-        'LIBDIRS := $(SDL2_PREFIX)/lib $(DEVKITPRO)/libnx/lib' \
-        '' \
-        'CFILES := $(wildcard *.c)' \
-        'OFILES := $(CFILES:.c=.o)' \
-        '' \
-        '.PHONY: all clean' \
-        '' \
-        'all: $(TARGET).nsp' \
-        '' \
-        '$(TARGET).elf: $(OFILES)' \
-        '	$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2_PREFIX)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)' \
-        '' \
-        '$(TARGET).nacp:' \
-        '	echo "{\"name\":\"Gemini\",\"author\":\"Google LLC\",\"version\":\"1.0.0\",\"appid\":\"0100ABCD12340000\"}" > main.nacp.json' \
-        '	nacptool --json main.nacp.json $@' \
-        '' \
-        '$(TARGET).nro: $(TARGET).elf $(TARGET).nacp' \
-        '	elf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)' \
-        '' \
-        '$(TARGET).nsp: $(TARGET).nro' \
-        '	mkdir -p exefs' \
-        '	cp $(TARGET).nro exefs/main.nro' \
-        '	npdmtool --json="{\"name\":\"Gemini\",\"appid\":\"0100ABCD12340000\"}" exefs/main.npdm' \
-        '	nspBuild -i exefs -o $@' \
-        '' \
-        '%.o: %.c' \
-        '	$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@' \
-        '' \
-        'clean:' \
-        '	rm -f $(OFILES) $(TARGET).elf $(TARGET).nacp $(TARGET).nro $(TARGET).nsp main.nacp.json' \
-        '	rm -rf exefs' \
-        '' > Makefile
+        cat > Makefile << 'EOF'
+        TARGET	:=	GeminiSwitch
+        BUILD	:=	build
+        SOURCES	:=	.
+        ROMFS	:=	romfs
         
-        echo "=== Makefile created ==="
-        cat -A Makefile | head -30
-        echo ""
-        echo "Checking for tabs..."
-        grep -P '^\t' Makefile | wc -l
+        ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec
+        CFLAGS	:=	-g -Wall -O2 -ffunction-sections $(ARCH) -D__SWITCH__
         
-    - name: Build project
+        DEVKITPRO	?=	/opt/devkitpro
+        SDL2_PREFIX	:=	$(DEVKITPRO)/portlibs/switch
+        
+        INCLUDE	:=	-I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2 -I$(DEVKITPRO)/libnx/include
+        LIBS	:=	-lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx
+        
+        CFILES	:=	$(wildcard *.c)
+        OFILES	:=	$(CFILES:.c=.o)
+        
+        .PHONY:	all clean
+        
+        all:	$(TARGET).nsp
+        
+        $(TARGET).elf:	$(OFILES)
+            $(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2_PREFIX)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)
+        
+        $(TARGET).nacp:
+            echo '{"name":"Gemini","author":"Google LLC","version":"1.0.0","appid":"0100ABCD12340000"}' > tmp.json
+            nacptool --json tmp.json $@
+        
+        $(TARGET).nro:	$(TARGET).elf $(TARGET).nacp
+            elf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)
+        
+        $(TARGET).nsp:	$(TARGET).nro
+            mkdir -p exefs
+            cp $(TARGET).nro exefs/main.nro
+            npdmtool --json='{"name":"Gemini","appid":"0100ABCD12340000"}' exefs/main.npdm
+            nspBuild -i exefs -o $@
+        
+        %.o:	%.c
+            $(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@
+        
+        clean:
+            rm -f *.o *.elf *.nacp *.nro *.nsp tmp.json
+            rm -rf exefs
+        EOF
+        sed -i 's/^        /\t/g' Makefile
+        head -20 Makefile | cat -A
+
+    - name: Build
       run: |
         export DEVKITPRO=/opt/devkitpro
         export PATH=$DEVKITPRO/tools/bin:$PATH
-        make -j$(nproc)
-        
-    - name: Verify output
-      run: |
-        echo "=== Build Results ==="
-        ls -la *.nsp *.nro *.elf 2>/dev/null || true
-        if [ -f GeminiSwitch.nsp ]; then
-          echo "✅ SUCCESS! NSP created:"
-          du -h GeminiSwitch.nsp
-          file GeminiSwitch.nsp
-        fi
-        
-    - name: Upload artifacts
+        make -j$(nproc) 2>&1
+
+    - name: Check output
+      run: ls -la *.nsp && echo "SUCCESS" || echo "FAILED"
+
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
-        name: geminiswitch-nsp
+        name: nsp-file
         path: "*.nsp"
