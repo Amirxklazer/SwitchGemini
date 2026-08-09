@@ -1,159 +1,67 @@
-name: Build Gemini NRO
+name: Build Gemini NRO (Working)
 
 on:
   push:
-    branches: [ main, develop ]
-  pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: devkitpro/devkita64:latest
-    timeout-minutes: 45
-
-    env:
-      DEVKITPRO: /opt/devkitpro
-      DEVKITA64: /opt/devkitpro/devkitA64
-      ROMFS_DIR: romfs
-      APP_NAME: Gemini
+    container: devkitpro/devkita64:latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      - name: Install all required libraries
         run: |
-          apt-get update -qq
-          apt-get install -y --no-install-recommends \
-            imagemagick file unzip ca-certificates curl xxd jq
-          rm -rf /var/lib/apt/lists/*
+          dkp-pacman -Sy --noconfirm
+          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-sdl2_image \
+                        switch-freetype switch-harfbuzz switch-libjpeg-turbo \
+                        switch-libpng switch-libwebp switch-curl switch-jansson --noconfirm
 
-      - name: Verify toolchain and libraries
+      - name: Set PKG_CONFIG_PATH
         run: |
-          aarch64-none-elf-gcc --version | head -1
-          ls -la $DEVKITPRO/libnx/include/switch.h
-          ls -la $DEVKITPRO/portlibs/switch/lib/libSDL2.a
-          ls -la $DEVKITPRO/portlibs/switch/lib/libSDL2_ttf.a
-          ls -la $DEVKITPRO/portlibs/switch/lib/libcurl.a
-          ls -la $DEVKITPRO/portlibs/switch/lib/libjansson.a
+          echo "PKG_CONFIG_PATH=/opt/devkitpro/portlibs/switch/lib/pkgconfig" >> $GITHUB_ENV
 
-      - name: Prepare ROMFS (download font)
+      - name: Prepare ROMFS and download font
         run: |
-          mkdir -p "$ROMFS_DIR"
-          curl -L -o "$ROMFS_DIR/Roboto-Regular.ttf" \
+          mkdir -p romfs
+          curl -L -o romfs/Roboto-Regular.ttf \
             "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
 
-      - name: Create icon (convert or default)
+      - name: Create icon (icon.jpg)
         run: |
           if [ -f icon.png ]; then
             convert icon.png -resize 256x256 -quality 90 icon.jpg
           else
             convert -size 256x256 xc:royalblue -quality 90 icon.jpg
           fi
-          identify icon.jpg
 
-      # --------------------------------------------------------------------
-      # Makefile – definitive version with correct library order
-      # --------------------------------------------------------------------
-      - name: Create Makefile
+      - name: Write main.c (Gemini client)
         run: |
-          cat > Makefile <<'EOF'
-          # Makefile for Gemini – final working version
-          DEVKITPRO   ?= /opt/devkitpro
-          DEVKITA64   ?= $(DEVKITPRO)/devkitA64
-          PORTLIBS    := $(DEVKITPRO)/portlibs/switch
-
-          TARGET     := Gemini
-          SOURCES    := .
-          INCLUDES   := .
-          ROMFS      ?= romfs
-
-          ARCH   := -march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIE
-          CFLAGS := -g -O2 -Wall $(ARCH)
-          CFLAGS += -I$(DEVKITPRO)/libnx/include
-          CFLAGS += -I$(PORTLIBS)/include
-          CFLAGS += -I$(PORTLIBS)/include/SDL2
-          CFLAGS += -I$(PORTLIBS)/include/curl
-          CFLAGS += -I$(PORTLIBS)/include/jansson
-
-          LDFLAGS  := -specs=$(DEVKITPRO)/libnx/switch.specs
-          LDFLAGS  += -g $(ARCH)
-          LDFLAGS  += -L$(DEVKITPRO)/libnx/lib
-          LDFLAGS  += -L$(PORTLIBS)/lib
-
-          # Critical: order matters – libnx first, then SDL, curl, jansson, system libs
-          LIBS := -lnx
-          LIBS += -lSDL2 -lSDL2_ttf
-          LIBS += -lcurl -ljansson
-          LIBS += -lz -lm -lEGL -lglapi -ldrm_nouveau -lpthread
-
-          CFILES := $(wildcard *.c)
-          OBJS   := $(CFILES:.c=.o)
-
-          .PHONY: all clean
-
-          all: $(TARGET).nro
-
-          $(TARGET).nro: $(TARGET).elf
-          	@echo "  [NRO]   $@"
-          	@elf2nro $< $@ --icon=icon.jpg --romfsdir=$(ROMFS)
-
-          $(TARGET).elf: $(OBJS)
-          	@echo "  [LD]    $@"
-          	@$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
-
-          %.o: %.c
-          	@echo "  [CC]    $<"
-          	@$(CC) $(CFLAGS) -c $< -o $@
-
-          clean:
-          	@rm -f $(OBJS) $(TARGET).elf $(TARGET).nro
-
-          include $(DEVKITPRO)/libnx/switch_rules
-          EOF
-
-      # --------------------------------------------------------------------
-      # main.c – final version (no warnings, no missing functions)
-      # --------------------------------------------------------------------
-      - name: Create main.c
-        run: |
-          cat > main.c <<'EOF'
-          // ================================================================
-          // main.c – Gemini AI Chat Client for Nintendo Switch
-          // ================================================================
-          // All features: up to 10 chats, L/R switch, Y new,
-          // ZL (trigger) import, ZR (trigger) export,
-          // D‑pad select preset questions, A send,
-          // touch support, Plus exit.
-          // ================================================================
-
+          cat << 'EOF' > main.c
           #include <stdio.h>
           #include <stdlib.h>
           #include <string.h>
           #include <stdbool.h>
           #include <sys/stat.h>
           #include <unistd.h>
-
           #include <SDL2/SDL.h>
           #include <SDL2/SDL_ttf.h>
           #include <curl/curl.h>
           #include <jansson.h>
 
-          // Constants
-          #define MAX_CHATS           10
-          #define MAX_MESSAGES         50
-          #define MAX_TEXT_LEN       1024
-          #define PRESET_QUESTIONS     6
-          #define MAX_RESPONSE_LEN   4096
-
+          #define MAX_CHATS 10
+          #define MAX_MESSAGES 50
+          #define MAX_TEXT_LEN 1024
+          #define PRESET_QUESTIONS 6
+          #define MAX_RESPONSE_LEN 4096
           #define GEMINI_API_KEY "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
           #define API_URL "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="
-
-          #define IMPORT_PATH   "/switch/GeminiSwitch/import.txt"
-          #define EXPORT_PATH   "/switch/GeminiSwitch/chat_export.txt"
+          #define IMPORT_PATH "/switch/GeminiSwitch/import.txt"
+          #define EXPORT_PATH "/switch/GeminiSwitch/chat_export.txt"
 
           typedef struct {
               char role[10];
@@ -166,8 +74,8 @@ jobs:
           } Chat;
 
           static Chat chats[MAX_CHATS];
-          static int  chat_count = 1;
-          static int  current_chat = 0;
+          static int chat_count = 1;
+          static int current_chat = 0;
 
           static const char *preset_questions[] = {
               "What is the meaning of life?",
@@ -183,13 +91,12 @@ jobs:
           static SDL_Renderer *renderer = NULL;
           static TTF_Font     *font = NULL;
           static bool running = true;
-
           static bool trigger_left_pressed = false;
           static bool trigger_right_pressed = false;
 
           static void ensure_dir(const char *path) {
               char tmp[256];
-              char *p = NULL;
+              char *p;
               snprintf(tmp, sizeof(tmp), "%s", path);
               for (p = tmp + 1; *p; p++) {
                   if (*p == '/') {
@@ -354,6 +261,7 @@ jobs:
               int max_y = 540;
               SDL_Color user_color = {100, 200, 255, 255};
               SDL_Color ass_color = {200, 255, 200, 255};
+
               for (int i = 0; i < chat->msg_count && y < max_y; i++) {
                   char label[20];
                   snprintf(label, sizeof(label), "%s: ", chat->msgs[i].role);
@@ -376,7 +284,8 @@ jobs:
               }
 
               char info[256];
-              snprintf(info, sizeof(info), "Chat %d/%d | L/R: switch | Y: new | ZL(trigger): import | ZR(trigger): export | Plus: exit",
+              snprintf(info, sizeof(info),
+                       "Chat %d/%d | L/R: switch | Y: new | ZL(trigger): import | ZR(trigger): export | Plus: exit",
                        current_chat+1, chat_count);
               SDL_Color info_col = {180, 180, 180, 255};
               render_text(renderer, font, info, 20, 700, info_col, NULL);
@@ -395,7 +304,7 @@ jobs:
               }
 
               window = SDL_CreateWindow("Gemini", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-                                        1280, 720, SDL_WINDOW_SHOWN);
+                                       1280, 720, SDL_WINDOW_SHOWN);
               if (!window) {
                   printf("Window creation failed\n");
                   return 1;
@@ -431,7 +340,6 @@ jobs:
                   while (SDL_PollEvent(&e)) {
                       if (e.type == SDL_QUIT) { running = false; }
 
-                      // Keyboard (PC testing)
                       else if (e.type == SDL_KEYDOWN) {
                           switch (e.key.keysym.sym) {
                               case SDLK_UP:    selected_question = (selected_question - 1 + PRESET_QUESTIONS) % PRESET_QUESTIONS; break;
@@ -456,7 +364,6 @@ jobs:
                               default: break;
                           }
                       }
-                      // Game controller buttons
                       else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
                           SDL_GameControllerButton btn = e.cbutton.button;
                           switch (btn) {
@@ -479,7 +386,6 @@ jobs:
                               default: break;
                           }
                       }
-                      // Game controller triggers (axis)
                       else if (e.type == SDL_CONTROLLERAXISMOTION) {
                           if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
                               bool pressed = (e.caxis.value > 8000);
@@ -498,7 +404,6 @@ jobs:
                               if (!pressed) trigger_right_pressed = false;
                           }
                       }
-                      // Touchscreen
                       else if (e.type == SDL_FINGERDOWN) {
                           float ty = e.tfinger.y * 720;
                           if (ty > 580 && ty < 580 + PRESET_QUESTIONS * 40) {
@@ -530,24 +435,67 @@ jobs:
           }
           EOF
 
-      - name: Build NRO
-        id: build_nro
+      - name: Write Makefile (using pkg-config)
         run: |
-          set -e
-          make clean || true
-          make ROMFS="$ROMFS_DIR" -j$(nproc)
-          NRO_FILE=$(find . -maxdepth 1 -name "*.nro" | head -1)
-          if [ -z "$NRO_FILE" ]; then
-            echo "ERROR: No .nro produced!"
-            exit 1
-          fi
-          echo "nro_path=$NRO_FILE" >> $GITHUB_OUTPUT
-          ls -lh "$NRO_FILE"
+          cat << 'MAKEEOF' > Makefile
+          ifeq ($(strip $(DEVKITPRO)),)
+          $(error "Please set DEVKITPRO in your environment.")
+          endif
+          include $(DEVKITPRO)/libnx/switch_rules
+          APP_TITLE   := Gemini
+          APP_AUTHOR  := Google LLC
+          APP_VERSION := 1.0
+          TARGET      := Gemini
+          BUILD       := build
+          SOURCES     := .
+          DATA        := data
+          INCLUDES    := .
+          SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch
+          PKG_CONFIG_PATH := $(SDL2_PREFIX)/lib/pkgconfig
+          export PKG_CONFIG_PATH
+          SDL2_INC    := $(shell PKG_CONFIG_PATH=$(SDL2_PREFIX)/lib/pkgconfig pkg-config --cflags sdl2 SDL2_ttf)
+          SDL2_LIBS   := $(shell PKG_CONFIG_PATH=$(SDL2_PREFIX)/lib/pkgconfig pkg-config --static --libs sdl2 SDL2_ttf)
+          CURL_LIBS   := $(shell PKG_CONFIG_PATH=$(SDL2_PREFIX)/lib/pkgconfig pkg-config --static --libs libcurl)
+          JANSSON_LIBS:= $(shell PKG_CONFIG_PATH=$(SDL2_PREFIX)/lib/pkgconfig pkg-config --static --libs jansson)
+          export INCLUDE := $(foreach dir,$(INCLUDES),-I$(TOPDIR)/$(dir)) -I$(DEVKITPRO)/libnx/include -I$(DEPSDIR) $(SDL2_INC)
+          ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
+          CFLAGS      := -g -Wall -O2 -ffunction-sections -fdata-sections $(ARCH) $(INCLUDE) -D__SWITCH__
+          CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions
+          ASFLAGS     := -g $(ARCH)
+          LDFLAGS     := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,-z,notext
+          LIBS        := -L$(DEVKITPRO)/libnx/lib -L$(SDL2_PREFIX)/lib -lnx $(SDL2_LIBS) $(CURL_LIBS) $(JANSSON_LIBS) -lfreetype -lharfbuzz -lpng -lbz2 -ljpeg -lz -lm -lpthread
+          ifneq ($(BUILD),$(notdir $(CURDIR)))
+          export OUTPUT   := $(CURDIR)/$(TARGET)
+          export TOPDIR   := $(CURDIR)
+          export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+                              $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+          export DEPSDIR  := $(CURDIR)/$(BUILD)
+          CFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+          CPPFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+          SFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+          export OFILES   := $(CFILES:.c=.o) $(CPPFILES:.cpp=.o) $(SFILES:.s=.o)
+          .PHONY: $(BUILD) clean all
+          all: $(BUILD)
+          $(BUILD):
+          	@[ -d $@ ] || mkdir -p $@
+          	@$(MAKE) --no-print-directory -C $@ -f $(CURDIR)/Makefile
+          clean:
+          	@echo clean ...
+          	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).nro $(TARGET).nacp
+          else
+          DEPENDS := $(OFILES:.o=.d)
+          $(OUTPUT).nro: $(OUTPUT).elf
+          $(OUTPUT).elf: $(OFILES)
+          	$(CXX) $(LDFLAGS) $(OFILES) $(LIBS) -o $@
+          -include $(DEPENDS)
+          endif
+          MAKEEOF
 
-      - name: Upload NRO
+      - name: Build Homebrew
+        run: make -f Makefile
+
+      - name: Upload NRO Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.APP_NAME }}.nro
-          path: ${{ steps.build_nro.outputs.nro_path }}
-          retention-days: 30
-          if-no-files-found: error
+          name: Gemini-NRO
+          path: ./*.nro
