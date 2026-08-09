@@ -23,7 +23,7 @@ jobs:
 
     - name: Create main.c
       run: |
-        cat > main.c << 'EOF'
+        cat > main.c << 'ENDOFFILE'
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
@@ -181,19 +181,66 @@ jobs:
           SDL_DestroyRenderer(rd); SDL_DestroyWindow(win); TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); socketExit(); romfsExit();
           return 0;
         }
-        EOF
+        ENDOFFILE
 
-    - name: Create Makefile (base64 method)
+    - name: Create Makefile with Python (guaranteed tabs)
       run: |
-        echo 'VEFSRUVUIDoJCUoR2VtaW5pU3dpdGNoKQpCVUlMRCA6PSBidWlsZApTT1VSQ0VTIDo9IC4KUk9NRlMgOj0gcm9tZnMKCkFSQ0ggOj0gLW1hcmNoPWFybXY4LWErY3JjK2NyeXB0byAtbXR1bmU9Y29ydGV4LWE1NyAtbXRwPXNvZnQgLWZQSUMgLWZ0bHMtbW9kZWw9bG9jYWwtZXhlYwpDRkxBRlMgOj0gLWcgLVdhbGwgLU8yIC1mZnVuY3Rpb24tc2VjdGlvbnMgJChBUkNIKSAtRF9fU1dJVENIX18KCkRFVktpUFJPID89IC9vcHQvZGV2a2l0cHJvClNETDJfUFJFRklYIDo9ICQoREVWS0lQUk8pL3BvcnRsaWJzL3N3aXRjaAoKSU5DTFVERSA6PSAtSSQoU0RMMl9QUkVGSVgpL2luY2x1ZGUgLUkkKFNETDJfUFJFRklYL0luY2x1ZGUpL1NETDIgLUkkKERVWUtJUFJPKS9saW54L2luY2x1ZGUKTElCUyA6PSAtbFNETDIgLWxTREwyX3R0ZiAtbGN1cmwgLWpzb25uc24gLWxueAoKQ0ZJTEVTIDo9ICQod2lsZGNhcmQgKi5jKQpPRklMRVMgOj0gJChDRklMRVM6LmM9Lm8pCgouUEhPTlk6CWFsbCBjbGVhbgoKYWxsOgkkKFRBUkdFVCkubnNwCgokKFRBUkdFVCkuZWxmOgkkKE9GSUxFUykKCSRDUykgJChDRkxBR1MpICQoT0ZJTEVTKSAtbyAkQCAtTCQoU0RMMl9QUkVGSVkpL2xpYiAtTCQoREVWS0lQUk8pL2xpbngvbGliICQoTElCUykKCiQoVEFSR0VULm5hY3ApOgogCWVjaG8gJyJuYW1lIjoiR2VtaW5pIiwiYXV0aG9yIjoiR29vZ2xlIExMQyIsInZlcnNpb24iOiIxLjAuMCIsImFwcGlkIjoiMDEwMEFCQ0QxMjM0MDAwMCInfScgPiB0bXAuanNvbgogCW5hY3B0b29sIC0tanNvbiB0bXAuanNvbiAkQAoKJChUQVJHRVQpLm5ybzogJChUQVJHRVQpLmVsZiAkKFRBUkdFVCkubmFjcAogCWVsZjJucm8gJDwgJEAkKFRBUkdFVCkubmFjcCAtLXJvbWZzZGlyPSQoUk9NRlMpCgokKFRBUkdFVCkubnNwOiAkKFRBUkdFVCkubnJvCglta2RpciAtcCBleGVmcwoJY3AgJChUQVJHRVQpLm5ybyBleGVmcy9tYWluLm5ybwoJbnBkbXRvb2wgLS1qc29uPSduYW1lIjoiR2VtaW5pIiwiYXBwaWQiOiIwMTAwQUJDRDEyMzQwMDAwIicnIGV4ZWZzL21haW4ubnBkbQoJbnNwQnVpbGQgLWkgZXhlZnMgLW8gJEAKCiUubzogJS5jCgkkKENJKSAkKENGTEFHUykgJChJTkNMVURFKSAtYyAkPCAtbyAkQAoKY2xlYW46CglybSAtZiAqLm8gKi5lbGYgKi5uY3AgKi5ucm8gKi5uc3AgdG1wLmpzb24KCXJtIC1yZiBleGVmcw==' | base64 -d > Makefile
+        python3 << 'PYEOF'
+        makefile_content = """TARGET := GeminiSwitch
+        SOURCES := .
+        ROMFS := romfs
+        
+        ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec
+        CFLAGS := -g -Wall -O2 -ffunction-sections $(ARCH) -D__SWITCH__
+        
+        DEVKITPRO ?= /opt/devkitpro
+        SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch
+        
+        INCLUDE := -I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2 -I$(DEVKITPRO)/libnx/include
+        LIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx
+        
+        CFILES := $(wildcard *.c)
+        OFILES := $(CFILES:.c=.o)
+        
+        .PHONY: all clean
+        
+        all: $(TARGET).nsp
+        
+        $(TARGET).elf: $(OFILES)
+        \t$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2_PREFIX)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)
+        
+        $(TARGET).nacp:
+        \techo '{"name":"Gemini","author":"Google LLC","version":"1.0.0","appid":"0100ABCD12340000"}' > tmp.json
+        \tnacptool --json tmp.json $@
+        
+        $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
+        \telf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)
+        
+        $(TARGET).nsp: $(TARGET).nro
+        \tmkdir -p exefs
+        \tcp $(TARGET).nro exefs/main.nro
+        \tnpdmtool --json='{"name":"Gemini","appid":"0100ABCD12340000"}' exefs/main.npdm
+        \tnspBuild -i exefs -o $@
+        
+        %.o: %.c
+        \t$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@
+        
+        clean:
+        \trm -f *.o *.elf *.nacp *.nro *.nsp tmp.json
+        \trm -rf exefs
+        """
+        with open('Makefile', 'w') as f:
+            f.write(makefile_content)
+        print("Makefile created with tabs")
+        PYEOF
 
-    - name: Verify Makefile tabs
+    - name: Verify Makefile
       run: |
-        echo "=== Checking for tabs ==="
-        grep -Pn '^\t' Makefile | head -10
+        echo "=== Checking for TABS ==="
+        grep -cP '\t' Makefile && echo "TABS FOUND" || echo "NO TABS"
         echo ""
-        echo "=== Line 23 ==="
-        sed -n '23p' Makefile | cat -A
+        echo "=== Content preview ==="
+        head -25 Makefile | cat -A
 
     - name: Build
       run: |
@@ -202,7 +249,7 @@ jobs:
         make -j$(nproc)
 
     - name: Check output
-      run: ls -la *.nsp && echo "SUCCESS" || echo "FAILED"
+      run: ls -la *.nsp 2>/dev/null && echo "SUCCESS" || echo "FAILED"
 
     - name: Upload NSP
       uses: actions/upload-artifact@v4
