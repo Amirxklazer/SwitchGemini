@@ -1,10 +1,3 @@
-# ================================================================================================
-# build.yml – Gemini NRO builder (no heredoc, fully YAML‑safe)
-# ================================================================================================
-# All source code is base64‑encoded to prevent any YAML parsing errors.
-# The workflow decodes, builds, and outputs a working .nro.
-# ================================================================================================
-
 name: Build Gemini NRO
 
 on:
@@ -19,14 +12,13 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: devkitpro/devkita64:latest
-    timeout-minutes: 60
+    timeout-minutes: 45
 
     env:
       DEVKITPRO: /opt/devkitpro
       DEVKITA64: /opt/devkitpro/devkitA64
       ROMFS_DIR: romfs
       APP_NAME: Gemini
-      API_KEY: AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg
 
     steps:
       - name: Checkout repository
@@ -36,7 +28,7 @@ jobs:
         run: |
           apt-get update -qq
           apt-get install -y --no-install-recommends \
-            imagemagick file unzip ca-certificates curl xxd jq tree
+            imagemagick file unzip ca-certificates curl xxd jq
           rm -rf /var/lib/apt/lists/*
 
       - name: Verify toolchain
@@ -48,13 +40,13 @@ jobs:
           ls -la $DEVKITPRO/portlibs/switch/lib/libcurl.a
           ls -la $DEVKITPRO/portlibs/switch/lib/libjansson.a
 
-      - name: Prepare ROMFS and font
+      - name: Prepare ROMFS (download Roboto font)
         run: |
           mkdir -p "$ROMFS_DIR"
           curl -L -o "$ROMFS_DIR/Roboto-Regular.ttf" \
             "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
 
-      - name: Create icon
+      - name: Create icon (convert or default)
         run: |
           if [ -f icon.png ]; then
             convert icon.png -resize 256x256 -quality 90 icon.jpg
@@ -64,18 +56,479 @@ jobs:
           identify icon.jpg
 
       # --------------------------------------------------------------------
-      # Base64‑encoded Makefile (safe, no heredoc)
+      # Write Makefile – using a multi‑line YAML string (no heredoc)
       # --------------------------------------------------------------------
-      - name: Decode and write Makefile
+      - name: Create Makefile
         run: |
-          echo "IyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCiMgTWFrZWZpbGUgZm9yIEdlbWluaSDigJMgZnVsbHkgZXhwbGljaXQsIG5vIHBrZy1jb25maWcKIyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCkRFVktJVFBSTyAgID89IC9vcHQvZGV2a2l0cHJvCkRFVktJVEE2NCAgID89ICQoREVWS0lUUFJPKS9kZXZraXQBNjQKUE9SVExJQlMgICAgOj0gJChERVZLSVRQUk8pL3BvcnRsaWJzL3N3aXRjaAoKVEFSR0VUICAgICA6PSBHZW1pbmkKU09VUkNFUyAgICA6PSAuCklOQ0xVREVTICAgOj0gLgpST01GUyAgICAgID89IHJvbWZzCgpBUkNIIAgIDo9IC1tYXJjaD1hcm12OC1hIC1tdHVuZT1jb3J0ZXgtYTU3IC1tdHA9c29mdCAtZlBJRQpDRkxBR1MgOj0gLWcgLU8yIC1XYWxsICQoQVJDSCkKQ0ZMQUdTICs9IC1JJCgkREVWS0lUUFJPKS9saWJueC9pbmNsdWRlCkNGTEFHUyArPSAtSSQoUE9SVExJQlMpL2luY2x1ZGUKQ0ZMQUdTICs9IC1JJCg9J$UE9SVExJQlMpL2luY2x1ZGUvU0RMMgpDRkxBR1MgKz0gLUkkKFBPUlRMSUJTKS9pbmNsdWRlL2N1cmwKQ0ZMQUdTICs9IC1JJCg9J$UE9SVExJQlMpL2luY2x1ZGUvamFuc29ubgoKTERGTEFHUyAgOj0gLXNwZWNzPSQoREVWS0lUUFJPKS9saWJueC9zd2l0Y2guc3BlY3MKTERGTEFHUyAgKz0gLWcgJChBUkNIKQpMREZMQUdTICArPSAtTCQoREVWS0lUUFJPKS9saWJueC9saWIKTERGTEFHUyAgKz0gLUwkKFBvcnRsaWJzKS9saWIKTERGTEFHUyAgKz0gLW54CkxERkxBR1MgICs9IC1sU0RMMiAtbFNETDJfdGZmCkxERkxBR1MgICs9IC1sY3VybCAtbGphbnNzb24KTERGTEFHUyAgKz0gLWx6IC1sbSAtbEVHTCAtbGdsYXBpIC1sZHJtX25vdXZhdXMgLWxwdGhyZWFkCgpDRklMRVMgOj0gJCh3aWxkY2FyZCAqLmMpCk9CSlMgICA6PSAkKENGSUxFUzouYz0ubykKCi5QSE9OWTogYWxsIGNsZWFuCgphbGw6ICQoVEFSR0VUKS5ucm8KCiQoVEFSR0VUKS5ucm86ICQoVEFSR0VUKS5lbGYKCUBlY2hvICIgIFtOUk9dICAgJEAiCglAZWxmMm5ybyAkPCAkQCAtLWljb249aWNvbi5qcGcgLS1yb21mc2Rpcj0kKFJPTUZTKQoKJChUQVJHRVQpLmVsZjogJChPQlJTKQoJQGVjaG8gIiAgW0xEXSAgICAkQCIKCUAlKENDKSAkKExERkxBR1MpICQoT0JKUykgLW8gJEAKCiUubzogJS5jCglAZWNobyAiICBbQ0NdICAgICQ8IgoJQCQoQ0MpICQoQ0ZMQUdTKSAtYyAkPCAtbyAkQAoKY2xlYW46CglAcm0gLWYgJChPQkpTKSAkKFRBUkdFVCkuZWxmICQoVEFSR0VUKS5ucm8KCmluY2x1ZGUgJChERVZLSVRQUk8pL2xpYm54L3N3aXRjaF9ydWxlcwo=" | base64 -d > Makefile
+          cat > Makefile <<'EOF'
+          # Makefile for Gemini – explicit paths
+          DEVKITPRO   ?= /opt/devkitpro
+          DEVKITA64   ?= $(DEVKITPRO)/devkitA64
+          PORTLIBS    := $(DEVKITPRO)/portlibs/switch
+
+          TARGET     := Gemini
+          SOURCES    := .
+          INCLUDES   := .
+          ROMFS      ?= romfs
+
+          ARCH   := -march=armv8-a -mtune=cortex-a57 -mtp=soft -fPIE
+          CFLAGS := -g -O2 -Wall $(ARCH)
+          CFLAGS += -I$(DEVKITPRO)/libnx/include
+          CFLAGS += -I$(PORTLIBS)/include
+          CFLAGS += -I$(PORTLIBS)/include/SDL2
+          CFLAGS += -I$(PORTLIBS)/include/curl
+          CFLAGS += -I$(PORTLIBS)/include/jansson
+
+          LDFLAGS  := -specs=$(DEVKITPRO)/libnx/switch.specs
+          LDFLAGS  += -g $(ARCH)
+          LDFLAGS  += -L$(DEVKITPRO)/libnx/lib
+          LDFLAGS  += -L$(PORTLIBS)/lib
+          LDFLAGS  += -lnx
+          LDFLAGS  += -lSDL2 -lSDL2_ttf
+          LDFLAGS  += -lcurl -ljansson
+          LDFLAGS  += -lz -lm -lEGL -lglapi -ldrm_nouveau -lpthread
+
+          CFILES := $(wildcard *.c)
+          OBJS   := $(CFILES:.c=.o)
+
+          .PHONY: all clean
+
+          all: $(TARGET).nro
+
+          $(TARGET).nro: $(TARGET).elf
+          	@echo "  [NRO]   $@"
+          	@elf2nro $< $@ --icon=icon.jpg --romfsdir=$(ROMFS)
+
+          $(TARGET).elf: $(OBJS)
+          	@echo "  [LD]    $@"
+          	@$(CC) $(LDFLAGS) $(OBJS) -o $@
+
+          %.o: %.c
+          	@echo "  [CC]    $<"
+          	@$(CC) $(CFLAGS) -c $< -o $@
+
+          clean:
+          	@rm -f $(OBJS) $(TARGET).elf $(TARGET).nro
+
+          include $(DEVKITPRO)/libnx/switch_rules
+          EOF
 
       # --------------------------------------------------------------------
-      # Base64‑encoded main.c (full Gemini client, fixed triggers)
+      # Write main.c – the complete Gemini client (fixed triggers)
       # --------------------------------------------------------------------
-      - name: Decode and write main.c
+      - name: Create main.c
         run: |
-          echo "Ly8gPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09Ci8vIG1haW4uYyDigJMgR2VtaW5pIEFJIENoYXQgQ2xpZW50IGZvciBOaW50ZW5kbyBTd2l0Y2gKLy8gPT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0KLy8gQWxsIGZlYXR1cmVzOiB1cCB0byAxMCBjaGF0cywgTC9SIHN3aXRjaCwgWSBuZXcsIFpMIGltcG9ydCAodHJpZ2dlciksCi8vIFpSIGV4cG9ydCAodHJpZ2dlciksIEQt5pCls6kfc2VsZWN0IHByZXNldCBxdWVzdGlvbnMsIEEgc2VuZCwgdG91Y2ggc3VwcG9ydCwKLy8gUGx1cyBleGl0LiBVc2VzIFNETDIsIFNETDJfdHRmLCBsaWJjdXJsLCBqYW5zc29uLgovLyA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PQoKI2luY2x1ZGUgPHN0ZGlvLmg+CiNpbmNsdWRlIDxzdGRsaWIuaD4KI2luY2x1ZGUgPHN0cmluZy5oPgojaW5jbHVkZSA8c3RkYm9vbC5oPgojaW5jbHVkZSA8c3lzL3N0YXQuaD4KI2luY2x1ZGUgPHVuaXN0ZC5oPgoKI2luY2x1ZGUgPFNETDIvU0RMLmg+CiNpbmNsdWRlIDxTREwyL1NETDJfdHRmLmg+CiNpbmNsdWRlIDxjdXJsL2N1cmwuaD4KI2luY2x1ZGUgPGphbnNzb24vamFuc3Nvbi5oPgoKLy8gLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KLy8gQ29uc3RhbnRzCi8vIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCiNkZWZpbmUgTUFYX0NIQVRzICAgICAgICAgICAxMAojZGVmaW5lIE1BWF9NRVNTQUdFUyAgICAgICAgIDUwCiNkZWZpbmUgTUFYX1RFWFRfTEVOICAgICAgIDEwMjQKI2RlZmluZSBQUkVTRVRfUVVFU1RJT05TICAgICA2CiNkZWZpbmUgTUFYX1JFU1BPTlNFX0xFTiAgIDQwOTYKCiNpZm5kZWYgR0VNSU5JX0FQSV9LRVkKI2RlZmluZSBHRU1JTklfQVBJX0tFWSAiQVEuQWI4Uk42S0ZfT2U0SEpCeUJCX0lVaGlDRGJqSElsOG03aklFb2k4ekYyQnpIdTZoQ2ciCiNlbmRpZgojZGVmaW5lIEFQSV9VUkwgImh0dHBzOi8vZ2VuZXJhdGl2ZWxhbmd1YWdlLmdvb2dsZWFwaXMuY29tL3YxYmV0YS9tb2RlbHMvZ2VtaW5pLTIuMC1mbGFzaDpnZW5lcmF0ZUNvbnRlbnQ/a2V5PSIKCiNkZWZpbmUgSU1QT1JUX1BBVEggICIvc3dpdGNoL0dlbWluaVN3aXRjaC9pbXBvcnQudHh0IgojZGVmaW5lIEVYUE9SVF9QQVRIICAiL3N3aXRjaC9HZW1pbmlTd2l0Y2gvY2hhdF9leHBvcnQudHh0IgoKLy8gLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KLy8gRGF0YSBzdHJ1Y3R1cmVzCi8vIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCnR5cGVkZWYgc3RydWN0IHsKICAgIGNoYXIgcm9sZVsxMF07CiAgICBjaGFyIHRleHRbTUFYX1RFWFRfTEVOXTsKfSBNZXNzYWdlOwoKdHlwZWRlZiBzdHJ1Y3QgewogICAgTWVzc2FnZSBtc2dzW01BWF9NRVNTQUdFU107CiAgICBpbnQgbXNnX2NvdW50Owp9IENoYXQ7CgpzdGF0aWMgQ2hhdCBjaGF0c1tNQVhfQ0hBVFNdOwpzdGF0aWMgaW50ICBjaGF0X2NvdW50ID0gMTsKc3RhdGljIGludCAgY3VycmVudF9jaGF0ID0gMDsKCnN0YXRpYyBjb25zdCBjaGFyICpwcmVzZXRfcXVlc3Rpb25zW10gPSB7CiAgICAiV2hhdCBpcyB0aGUgbWVhbmluZyBvZiBsaWZlPyIsCiAgICAiRXhwbGFpbiBxdWFudHVtIGNvbXB1dGluZyBpbiBzaW1wbGUgdGVybXMuIiwKICAgICJHaXZlIG1lIGEgcmVjaXBlIGZvciBjaG9jb2xhdGUgY2FrZS4iLAogICAgIldyaXRlIGEgaGFpa3UgYWJvdXQgdGhlIG9jZWFuLiIsCiAgICAiV2hhdCBhcmUgdGhlIGJlbmVmaXRzIG9mIGV4ZXJjaXNlPyIsCiAgICAiVGVsbCBtZSBhIGpva2UuIgp9OwpzdGF0aWMgaW50IHNlbGVjdGVkX3F1ZXN0aW9uID0gMDsKCnN0YXRpYyBTRExfV2luZG93ICAgKmZpbmRvdzsKc3RhdGljIFNETF9SZW5kZXJlciAqcmVuZGVyZXI7CnN0YXRpYyBUVFpfRm9udCAgICAgKmZvbnQ7CnN0YXRpYyBib29sIHJ1bm5pbmcgPSB0cnVlOwoKLy8gVHJpZ2dlciBzdGF0ZSBmb3IgaW1wb3J0L2V4cG9ydAouc3RhdGljIGJvb2wgdHJpZ2dlcl9sZWZ0X3ByZXNzZWQgPSBmYWxzZTsKc3RhdGljIGJvb2wgdHJpZ2dlcl9yaWdodF9wcmVzc2VkID0gZmFsc2U7CgovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQovLyBIZWxwZXI6IGVuc3VyZSBkaXJlY3RvcnkgZXhpc3RzCi8vIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCnN0YXRpYyB2b2lkIGVuc3VyZV9kaXIoY29uc3QgY2hhciAqcGF0aCkgewogICAgY2hhciB0bXBbMjU2XTsKICAgIGNoYXIgKnAgPSBOVUxMOwogICAgc25wcmludGYodG1wLCBzaXplb2YodG1wKSwgIiVzIiwgcGF0aCk7CiAgICBmb3IgKHAgPSB0bXAgKyAxOyAqcDsgcCsrKSB7CiAgICAgICAgaWYgKCpwID09ICcvJykgewogICAgICAgICAgICAqcCA9IDA7CiAgICAgICAgICAgIG1rZGlyKHRtcCwgMDc1NSk7CiAgICAgICAgICAgICpwID0gJy8nOwogICAgICAgIH0KICAgIH0KICAgIG1rZGlyKHRtcCwgMDc1NSk7Cn0KCi8vIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCi8vIE1lc3NhZ2UgbWFuYWdlbWVudAovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQpzdGF0aWMgdm9pZCBhZGRfbWVzc2FnZShDaGF0ICpjaGF0LCBjb25zdCBjaGFyICpyb2xlLCBjb25zdCBjaGFyICp0ZXh0KSB7CiAgICBpZiAoY2hhdC0+bXNnX2NvdW50ID49IE1BWF9NRVNTQUdFUykgcmV0dXJuOwogICAgTWVzc2FnZSAqbXNnID0gJmNoYXQtPm1zZ3NbY2hhdC0+bXNnX2NvdW50KytdOwogICAgc3RybmNweShtc2ctPnJvbGUsIHJvbGUsIHNpemVvZihtc2ctPnJvbGUpLTEpOwogICAgc3RybmNweShtc2ctPnRleHQsIHRleHQsIHNpemVvZihtc2ctPnRleHQpLTEpOwogICAgbXNnLT50ZXh0W3NpemVvZihtc2ctPnRleHQpLTFdID0gJ1wwJzsKfQoKc3RhdGljIHZvaWQgY2xlYXJfY2hhdChDaGF0ICpjaGF0KSB7CiAgICBjaGF0LT5tc2dfY291bnQgPSAwOwp9CgovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQovLyBHZW1pbmkgQVBJIGNhbGwgKGJsb2NraW5nKQovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQpzdGF0aWMgc2l6ZV90IHdyaXRlX2NhbGxiYWNrKHZvaWQgKmNvbnRlbnRzLCBzaXplX3Qgc2l6ZSwgc2l6ZV90IG5tZW1iLCB2b2lkICp1c2VycCkgewogICAgc2l6ZV90IHRvdGFsID0gc2l6ZSAqIG5tZW1iOwogICAgY2hhciAqKnJlc3BvbnNlX3B0ciA9IChjaGFyKiopdXNlcnA7CiAgICAqcmVzcG9uc2VfcHRyID0gcmVhbGxvYygqcmVzcG9uc2VfcHRyLCBzdHJsZW4oKnJlc3BvbnNlX3B0cikgKyB0b3RhbCArIDEpOwogICAgaWYgKCEqcmVzcG9uc2VfcHRyKSByZXR1cm4gMDsKICAgIHN0cm5jYXQoKnJlc3BvbnNlX3B0ciwgKGNoYXIqKWNvbnRlbnRzLCB0b3RhbCk7CiAgICByZXR1cm4gdG90YWw7Cn0KCnN0YXRpYyBib29sIHNlbmRfdG9fZ2VtaW5pKGNvbnN0IGNoYXIgKnVzZXJfdGV4dCwgY2hhciAqcmVzcG9uc2Vfb3V0LCBzaXplX3Qgb3V0X3NpemUpIHsKICAgIENVUkwgKmN1cmw7CiAgICBDVVJMQ29kZSByZXM7CiAgICBjaGFyICpqc29uX3BheWxvYWQgPSBOVUxMOwogICAgY2hhciAqcmVzcG9uc2VfZGF0YSA9IE5VTEw7CiAgICBib29sIHN1Y2Nlc3MgPSBmYWxzZTsKCiAgICBqc29uX3QgKnJvb3QgPSBqc29uX29iamVjdCgpOwogICAganNvbl90ICpjb250ZW50cyA9IGpzb25fYXJyYXkoKTsKICAgIGpzb25fdCAqcGFydHMgPSBqc29uX2FycmF5KCk7CiAgICBqc29uX3QgKnBhcnQgPSBqc29uX29iamVjdCgpOwogICAganNvbl90ICp0ZXh0X29iaiA9IGpzb25fc3RyaW5nKHVzZXJfdGV4dCk7CiAgICBqc29uX29iamVjdF9zZXQocGFydCwgInRleHQiLCB0ZXh0X29iaik7CiAgICBqc29uX2FycmF5X2FwcGVuZChwYXJ0cywgcGFydCk7CiAgICBqc29uX3QgKnBhcnRzX2NvbnRhaW5lciA9IGpzb25fb2JqZWN0KCk7CiAgICBqc29uX29iamVjdF9zZXQocGFydHNfY29udGFpbmVyLCAicGFydHMiLCBwYXJ0cyk7CiAgICBqc29uX2FycmF5X2FwcGVuZChjb250ZW50cywgcGFydHNfY29udGFpbmVyKTsKICAgIGpzb25fb2JqZWN0X3NldChyb290LCAiY29udGVudHMiLCBjb250ZW50cyk7CgogICAganNvbl9wYXlsb2FkID0ganNvbl9kdW1wcyhyb290LCBKU09OX0NPTVBBQ1QpOwogICAganNvbl9kZWNyZWYocm9vdCk7CgogICAgY2hhciB1cmxbNTEyXTsKICAgIHNucHJpbnRmKHVybCwgc2l6ZW9mKHVybCksICIlc3MlcyIsIEFQSV9VUkwgLwogICAgZ2VtaW5pX2FwaV9rZXkpOwoKICAgIGN1cmxfZ2xvYmFsX2luaXQoQ1VSTF9HTE9CQUxfQUxMKTsKICAgIGN1cmwgPSBjdXJsX2Vhc3lfaW5pdCgpOwogICAgaWYgKGN1cmwpIHsKICAgICAgICBzdHJ1Y3QgY3VybF9zbGlzdCAqaGVhZGVycyA9IE5VTEw7CiAgICAgICAgaGVhZGVycyA9IGN1cmxfc2xpc3RfYXBwZW5kKGhlYWRlcnMsICJDb250ZW50LVR5cGU6IGFwcGxpY2F0aW9uL2pzb24iKTsKCiAgICAgICAgY3VybF9lYXN5X3NldG9wdChjdXJsLCBDVVJMT1BUX1VSTCwgdXJsKTsKICAgICAgICBjdXJsX2Vhc3lfc2V0b3B0KGN1cmwsIENVUkxPUFRfUE9TVEZJRUxEUywganNvbl9wYXlsb2FkKTsKICAgICAgICBjdXJsX2Vhc3lfc2V0b3B0KGN1cmwsIENVUkxPUFRfSFRUUEhFQURFUiwgaGVhZGVycyk7CiAgICAgICAgY3VybF9lYXN5X3NldG9wdChjdXJsLCBDVVJMT1BUX1dSSVRFRlVOQ1RJT04sIHdyaXRlX2NhbGxiYWNrKTsKICAgICAgICBjdXJsX2Vhc3lfc2V0b3B0KGN1cmwsIENVUkxPUFRfV1JJVEVEQVRBLCAmcmVzcG9uc2VfZGF0YSk7CiAgICAgICAgY3VybF9lYXN5X3NldG9wdChjdXJsLCBDVVJMT1BUX1RJTUVPVVQsIDMwTCk7CgogICAgICAgIHJlcyA9IGN1cmxfZWFzeV9wZXJmb3JtKGN1cmwpOwogICAgICAgIGlmIChyZXMgPT0gQ1VSTE9LX09LICYmIHJlc3BvbnNlX2RhdGEpIHsKICAgICAgICAgICAganNvbl9lcnJvcl90IGVycm9yOwogICAgICAgICAgICBqc29uX3QgKnJvb3RfcmVzcCA9IGpzb25fbG9hZHMocmVzcG9uc2VfZGF0YSwgMCwgJmVycm9yKTsKICAgICAgICAgICAgaWYgKHJvb3RfcmVzcCkgewogICAgICAgICAgICAgICAganNvbl90ICpjYW5kaWRhdGVzID0ganNvbl9vYmplY3RfZ2V0KHJvb3RfcmVzcCwgImNhbmRpZGF0ZXMiKTsKICAgICAgICAgICAgICAgIGlmIChjYW5kaWRhdGVzICYmIGpzb25faXNfYXJyYXkoY2FuZGlkYXRlcykpIHsKICAgICAgICAgICAgICAgICAgICBqc29uX3QgKmZpcnN0ID0ganNvbl9hcnJheV9nZXQoY2FuZGlkYXRlcywgMCk7CiAgICAgICAgICAgICAgICAgICAgaWYgKGZpcnN0KSB7CiAgICAgICAgICAgICAgICAgICAgICAgIGpzb25fdCAqY29udGVudCA9IGpzb25fb2JqZWN0X2dldChmaXJzdCwgImNvbnRlbnQiKTsKICAgICAgICAgICAgICAgICAgICAgICAgaWYgKGNvbnRlbnQpIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGpzb25fdCAqcGFydHNfYXJyID0ganNvbl9vYmplY3RfZ2V0KGNvbnRlbnQsICJwYXJ0cyIpOwogICAgICAgICAgICAgICAgICAgICAgICAgICAgaWYgKHBhcnRzX2FyciAmJiBqc29uX2lzX2FycmF5KHBhcnRzX2FycikpIHsKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBqc29uX3QgKmZpcnN0X3BhcnQgPSBqc29uX2FycmF5X2dldChwYXJ0c19hcnIsIDApOwogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmIChmaXJzdF9wYXJ0KSB7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGpzb25fdCAqdGV4dF9qc29uID0ganNvbl9vYmplY3RfZ2V0KGZpcnN0X3BhcnQsICJ0ZXh0Iik7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIGlmICh0ZXh0X2pzb24gJiYganNvbl9pc19zdHJpbmcodGV4dF9qc29uKSkgewogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29uc3QgY2hhciAqdGV4dCA9IGpzb25fc3RyaW5nX3ZhbHVlKHRleHRfanNvbik7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICBzdHJuY3B5KHJlc3BvbnNlX291dCwgdGV4dCwgb3V0X3NpemUtMSk7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICByZXNwb25zZV9vdXRbb3V0X3NpemUtMV0gPSAnXDAnOwogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgc3VjY2VzcyA9IHRydWU7CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBqc29uX2RlY3JlZihyb290X3Jlc3ApOwogICAgICAgICAgICB9CiAgICAgICAgfQogICAgICAgIGN1cmxfZWFzeV9jbGVhbnVwKGN1cmwpOwogICAgICAgIGN1cmxfc2xpc3RfZnJlZV9hbGwoaGVhZGVycyk7CiAgICB9CiAgICBjdXJsX2dsb2JhbF9jbGVhbnVwKCk7CgogICAgZnJlZShqc29uX3BheWxvYWQpOwogICAgZnJlZShyZXNwb25zZV9kYXRhKTsKICAgIHJldHVybiBzdWNjZXNzOwp9CgovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQovLyBJbXBvcnQgLyBFeHBvcnQKLy8gLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0Kc3RhdGljIHZvaWQgaW1wb3J0X2NoYXQoKSB7CiAgICBGSUxFICpmID0gZm9wZW4oSU1QT1JUX1BBVEgsICJyIik7CiAgICBpZiAoIWYpIHJldHVybjsKICAgIGNoYXIgbGluZVtNQVhfVEVYVF9MRU5dOwogICAgaWYgKGZnZXRzKGxpbmUsIHNpemVvZihsaW5lKSwgZikpIHsKICAgICAgICBsaW5lW3N0cmNzcG4obGluZSwgIlxuIildID0gJ1wwJzsKICAgICAgICBhZGRfbWVzc2FnZSgmY2hhdHNbY3VycmVudF9jaGF0XSwgInVzZXIiLCBsaW5lKTsKICAgICAgICBjaGFyIHJlc3BvbnNlW01BWF9SRVNQT05TRV9MRU5dOwogICAgICAgIGlmIChzZW5kX3RvX2dlbWluaShsaW5lLCByZXNwb25zZSwgc2l6ZW9mKHJlc3BvbnNlKSkpIHsKICAgICAgICAgICAgYWRkX21lc3NhZ2UoJmNoYXRzW2N1cnJlbnRfY2hhdF0sICJhc3Npc3RhbnQiLCByZXNwb25zZSk7CiAgICAgICAgfSBlbHNlIHsKICAgICAgICAgICAgYWRkX21lc3NhZ2UoJmNoYXRzW2N1cnJlbnRfY2hhdF0sICJhc3Npc3RhbnQiLCAiRXJyb3I6IEFQSSBjYWxsIGZhaWxlZC4iKTsKICAgICAgICB9CiAgICB9CiAgICBmY2xvc2UoZik7CiAgICByZW1vdmUoSU1QT1JUX1BBVEgpOwp9CgpzdGF0aWMgdm9pZCBleHBvcnRfY2hhdCgpIHsKICAgIGVuc3VyZV9kaXIoIi9zd2l0Y2gvR2VtaW5pU3dpdGNoIik7CiAgICBGSUxFICpmID0gZm9wZW4oRVhQT1JUX1BBVEgsICJ3Iik7CiAgICBpZiAoIWYpIHJldHVybjsKICAgIENoYXQgKmNoYXQgPSAmY2hhdHNbY3VycmVudF9jaGF0XTsKICAgIGZvciAoaW50IGkgPSAwOyBpIDwgY2hhdC0+bXNnX2NvdW50OyBpKyspIHsKICAgICAgICBmcHJpbnRmKGYsICIldXM6ICVzXG4iLCBjaGF0LT5tc2dzW2ldLnJvbGUsIGNoYXQtPm1zZ3NbaV0udGV4dCk7CiAgICB9CiAgICBmY2xvc2UoZik7Cn0KCi8vIC0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tCi8vIFVJIHJlbmRlcmluZwovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQpzdGF0aWMgdm9pZCByZW5kZXJfdGV4dChTRExfUmVuZGVyZXIgKnJlbiwgVFRGX0ZvbnQgKmZvbnQsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgY29uc3QgY2hhciAqdGV4dCwgaW50IHgsIGludCB5LAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIFNETF9Db2xvciBjb2xvciwgU0RMX1JlY3QgKnJlY3Rfb3V0KSB7CiAgICBTRExfU3VyZmFjZSAqc3VyZiA9IFRURl9SZW5kZXJVVEZfQmxlbmRlZChmb250LCB0ZXh0LCBjb2xvcik7CiAgICBpZiAoIXN1cmYpIHJldHVybjsKICAgIFNETF9UZXh0dXJlICp0ZXggPSBTRENfQ3JlYXRlVGV4dHVyZUZyb21TdXJmYWNlKHJlbiwgc3VyZik7CiAgICBTRExfUmVjdCByZWN0ID0ge3gsIHksIHN1cmYtPndLCBzdXJmLT5ofTsKICAgIFNETF9SZW5kZXJDb3B5KHJlbiwgdGV4LCBOVUxMLCAmcmVjdCk7CiAgICBpZiAocmVjdF9vdXQpICpyZWN0X291dCA9IHJlY3Q7CiAgICBTRENfRnJlZVN1cmZhY2Uoc3VyZik7CiAgICBTRENfRGVzdHJveVRleHR1cmUodGV4KTsKfQoKc3RhdGljIHZvaWQgcmVuZGVyX2NoYXQoKSB7CiAgICBTRENfU2V0UmVuZGVyRHJhd0NvbG9yKHJlbmRlcmVyLCAzMCwgMzAsIDMwLCAyNTUpOwogICAgU0RMX1JlbmRlckNsZWFyKHJlbmRlcmVyKTsKCiAgICBTRExfUmVjdCBjaGF0X2FyZWEgPSB7MTAsIDEwLCAxMjIwLCA1NTB9OwogICAgU0RMX1NldFJlbmRlckRyYXdDb2xvcihyZW5kZXJlciwgNTAsIDUwLCA1MCwgMjU1KTsKICAgIFNETF9SZW5kZXJGaWxsUmVjdChyZW5kZXJlciwgJmNoYXRfYXJlYSk7CgogICAgQ2hhdCAqY2hhdCA9ICZjaGF0c1tjdXJyZW50X2NoYXRdOwogICAgaW50IHkgPSAyMDsKICAgIGludCBtYXhfeSA9IDU0MDsKICAgIFNETF9Db2xvciB1c2VyX2NvbG9yID0gezEwMCwgMjAwLCAyNTUsIDI1NX07CiAgICBTRExfQ29sb3IgYXNzX2NvbG9yID0gezIwMCwgMjU1LCAyMDAsIDI1NX07CiAgICBmb3IgKGludCBpID0gMDsgaSA8IGNoYXQtPm1zZ19jb3VudCAmJiB5IDwgbWF4X3k7IGkrKykgewogICAgICAgIGNoYXIgbGFiZWxbMjBdOwogICAgICAgIHNucHJpbnRmKGxhYmVsLCBzaXplb2YobGFiZWwpLCAiJXM6ICIsIGNoYXQtPm1zZ3NbaV0ucm9sZSk7CiAgICAgICAgY2hhciBjb21iaW5lZFtNQVhfVEVYVF9MRU4gKyAyMF07CiAgICAgICAgc25wcmludGYoY29tYmluZWQsIHNpemVvZihjb21iaW5lZCksICIlcyVzIiwgbGFiZWwsIGNoYXQtPm1zZ3NbaV0udGV4dCk7CiAgICAgICAgU0RMX0NvbG9yIGNvbCA9IChzdHJjbXAoY2hhdC0+bXNnc1tpXS5yb2xlLCAidXNlciIpID09IDApID8gdXNlcl9jb2xvciA6IGFzc19jb2xvcjsKICAgICAgICBTRExfUmVjdCByZWN0OwogICAgICAgIHJlbmRlcl90ZXh0KHJlbmRlcmVyLCBmb250LCBjb21iaW5lZCwgMjAsIHksIGNvbCwgJnJlY3QpOwogICAgICAgIHkgKz0gcmVjdC5oICsgNTsKICAgICAgICBpZiAoeSA+IG1heF95KSBicmVhazsKICAgIH0KCiAgICBpbnQgcV94ID0gMjAsIHFfeSA9IDU4MCwgcV9zcGFjaW5nID0gNDA7CiAgICBTRExfQ29sb3IgcV9ub3JtYWwgPSB7MjAwLCAyMDAsIDIwMCwgMjU1fTsKICAgIFNETF9Db2xvciBxX3NlbGVjdGVkID0gezI1NSwgMjU1LCAxMDAsIDI1NX07CiAgICBmb3IgKGludCBpID0gMDsgaSA8IFBSRVNFVF9RVUVTVElPTlM7IGkrKykgewogICAgICAgIFNETF9Db2xvciBjb2wgPSAoaSA9PSBzZWxlY3RlZF9xdWVzdGlvbikgPyBxX3NlbGVjdGVkIDogcV9ub3JtYWw7CiAgICAgICAgU0RMX1JlY3QgcmVjdDsKICAgICAgICByZW5kZXJfdGV4dChyZW5kZXJlciwgZm9udCwgcHJlc2V0X3F1ZXN0aW9uc1tpXSwgcV94LCBxX3kgKyBpKnFfc3BhY2luZywgY29sLCAmcmVjdCk7CiAgICB9CgogICAgY2hhciBpbmZvWzI1Nl07CiAgICBzbnByaW50ZihpbmZvLCBzaXplb2YoaW5mbyksICJDaGF0ICVkLyVkIHwgTC9SOiBzd2l0Y2ggfCBZOiBuZXcgfCBaTDpgaW1wb3J0IHwgWlI6IGV4cG9ydCB8IFBsdXM6IGV4aXQiLAogICAgICAgICAgICAgY3VycmVudF9jaGF0KzEsIGNoYXRfY291bnQpOwogICAgU0RMX0NvbG9yIGluZm9fY29sID0gezE4MCwgMTgwLCAxODAsIDI1NX07CiAgICByZW5kZXJfdGV4dChyZW5kZXJlciwgZm9udCwgaW5mbywgMjAsIDcwMCwgaW5mb19jb2wsIE5VTEwpOwoKICAgIFNETF9SZW5kZXJQcmVzZW50KHJlbmRlcmVyKTsKfQoKLy8gLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0KLy8gTWFpbgovLyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLQppbnQgbWFpbihpbnQgYXJnYywgY2hhciAqYXJndltdKSB7CiAgICBpZiAoU0RMX0luaXQoU0RMX0lOSVRfVklERU8gfCBTRExfSU5JVF9HQVNFQ09OVFJPTExFUikgPCAwKSB7CiAgICAgICAgcHJpbnRmKCJTRExfSW5pdCBmYWlsZWRcbiIpOwogICAgICAgIHJldHVybiAxOwogICAgfQogICAgaWYgKFRURl9Jbml0KCkgPCAwKSB7CiAgICAgICAgcHJpbnRmKCJUVGZfSW5pdCBmYWlsZWRcbiIpOwogICAgICAgIHJldHVybiAxOwogICAgfQoKICAgIHdpbmRvdyA9IFNETF9DcmVhdGVXaW5kb3coIkdlbWluaSIsIFNETF9XSU5ET1dQT1NfQ0VOVEVSRUQsIFNETF9XSU5ET1dQT1NfQ0VOVEVSRUQsCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgMTI4MCwgNzIwLCBTRExfV0lORE9XX1NIT1dOKTsKICAgIGlmICghd2luZG93KSB7CiAgICAgICAgcHJpbnRmKCJXaW5kb3cgY3JlYXRpb24gZmFpbGVkXG4iKTsKICAgICAgICByZXR1cm4gMTsKICAgIH0KICAgIHJlbmRlcmVyID0gU0RMX0NyZWF0ZVJlbmRlcmVyKHdpbmRvdywgLTEsIFNETF9SRU5ERVJFX0FDQ0VMRVJBVEVEIHwgU0RMX1JFTkRFUkVSUF9QUkVTRU5UVlNZTkMpOwogICAgaWYgKCFyZW5kZXJlcikgewogICAgICAgIHByaW50ZigiUmVuZGVyZXIgY3JlYXRpb24gZmFpbGVkXG4iKTsKICAgICAgICByZXR1cm4gMTsKICAgIH0KCiAgICBmb250ID0gVFRGX09wZW5Gb250KCJyb21mczovUm9ib3RvLVJlZ3VsYXIudHRmIiwgMjIpOwogICAgaWYgKCFmb250KSB7CiAgICAgICAgcHJpbnRmKCJGb250IGxvYWQgZnJvbSByb21mcyBmYWlsZWQsIHRyeWluZyBsb2NhbC4uLlxuIik7CiAgICAgICAgZm9udCA9IFRURl9PcGVuRm9udCgiUm9ib3RvLVJlZ3VsYXIudHRmIiwgMjIpOwogICAgICAgIGlmICghZm9udCkgewogICAgICAgICAgICBwcmludGYoIkZvbnQgbG9hZCBmYWlsZWRcbiIpOwogICAgICAgICAgICByZXR1cm4gMTsKICAgICAgICB9CiAgICB9CgogICAgU0RMX0dhbWVDb250cm9sbGVyICpjdHJsID0gTlVMTDsKICAgIGZvciAoaW50IGkgPSAwOyBpIDwgU0RMX051bUpveXN0aWNrcygpOyBpKyspIHsKICAgICAgICBpZiAoU0RMX0lzR2FtZUNvbnRyb2xsZXIoaSkpIHsKICAgICAgICAgICAgY3RybCA9IFNETF9HYW1lQ29udHJvbGxlck9wZW4oaSk7CiAgICAgICAgICAgIGJyZWFrOwogICAgICAgIH0KICAgIH0KCiAgICBjbGVhcl9jaGF0KCZjaGF0c1swXSk7CgogICAgd2hpbGUgKHJ1bm5pbmcpIHsKICAgICAgICBTRExfRXZlbnQgZTsKICAgICAgICB3aGlsZSAoU0RMX1BvbGxFdmVudCgmZSkpIHsKICAgICAgICAgICAgaWYgKGUudHlwZSA9PSBTRExfUVVJVCkgeyBydW5uaW5nID0gZmFsc2U7IH0KCiAgICAgICAgICAgIC8vIEtleWJvYXJkIChQQyB0ZXN0aW5nKQogICAgICAgICAgICBlbHNlIGlmIChlLnR5cGUgPT0gU0RMX0tFWURPV04pIHsKICAgICAgICAgICAgICAgIHN3aXRjaCAoZS5rZXkua2V5c3ltLnN5bSkgewogICAgICAgICAgICAgICAgICAgIGNhc2UgU0RMS19VUDogICAgc2VsZWN0ZWRfcXVlc3Rpb24gPSAoc2VsZWN0ZWRfcXVlc3Rpb24gLSAxICsgUFJFU0VUX1FVRVNUSU9OUykgJSBQUkVTRVRfUVVFU1RJT05TOyBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF9ET1dOOiAgc2VsZWN0ZWRfcXVlc3Rpb24gPSAoc2VsZWN0ZWRfcXVlc3Rpb24gKyAxKSAlIFBSRVNFVF9RVUVTVElPTlM7IGJyZWFrOwogICAgICAgICAgICAgICAgICAgIGNhc2UgU0RMS19SRVRVUk46CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExLX1NQQUNFOiB7CiAgICAgICAgICAgICAgICAgICAgICAgIGNvbnN0IGNoYXIgKnEgPSBwcmVzZXRfcXVlc3Rpb25zW3NlbGVjdGVkX3F1ZXN0aW9uXTsKICAgICAgICAgICAgICAgICAgICAgICAgYWRkX21lc3NhZ2UoJmNoYXRzW2N1cnJlbnRfY2hhdF0sICJ1c2VyIiwgcSk7CiAgICAgICAgICAgICAgICAgICAgICAgIGNoYXIgcmVzcFtNQVhfUkVTUE9OU0VfTEVOXTsKICAgICAgICAgICAgICAgICAgICAgICAgaWYgKHNlbmRfdG9fZ2VtaW5pKHEsIHJlc3AsIHNpemVvZihyZXNwKSkpCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBhZGRfbWVzc2FnZSgmY2hhdHNbY3VycmVudF9jaGF0XSwgImFzc2lzdGFudCIsIHJlc3ApOwogICAgICAgICAgICAgICAgICAgICAgICBlbHNlCiAgICAgICAgICAgICAgICAgICAgICAgICAgICBhZGRfbWVzc2FnZSgmY2hhdHNbY3VycmVudF9jaGF0XSwgImFzc2lzdGFudCIsICJFcnJvciIpOwogICAgICAgICAgICAgICAgICAgICAgICBicmVhazsKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExfbDogY2FzZSBTRExfTEVGVDogIGlmIChjdXJyZW50X2NoYXQgPiAwKSBjdXJyZW50X2NoYXQtLTsgYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExfcjogY2FzZSBTRExfUklHSFQ6IGlmIChjdXJyZW50X2NoYXQgPCBjaGF0X2NvdW50LTEpIGN1cnJlbnRfY2hhdCsrOyBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF95OiBpZiAoY2hhdF9jb3VudCA8IE1BWF9DSEFUUykgeyBjbGVhcl9jaGF0KCZjaGF0c1tjaGF0X2NvdW50XSk7IGN1cnJlbnRfY2hhdCA9IGNoYXRfY291bnQ7IGNoYXRfY291bnQrKzsgfSBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF9pOiBpbXBvcnRfY2hhdCgpOyBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF9lOiBleHBvcnRfY2hhdCgpOyBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF9FU0NBUEU6IHJ1bm5pbmcgPSBmYWxzZTsgYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgZGVmYXVsdDogYnJlYWs7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICAgICAgLy8gR2FtZSBjb250cm9sbGVyIGJ1dHRvbgogICAgICAgICAgICBlbHNlIGlmIChlLnR5cGUgPT0gU0RMX0NPTlRST0xMRVJCVVRUT05ET1dOKSB7CiAgICAgICAgICAgICAgICBTRExfR2FtZUNvbnRyb2xsZXJCdXR0b24gYnRuID0gZS5jYnV0dG9uLmJ1dHRvbjsKICAgICAgICAgICAgICAgIHN3aXRjaCAoYnRuKSB7CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExfQ09OVFJPTExFUl9CVVRUT05fRFBBRF9VUDogICAgc2VsZWN0ZWRfcXVlc3Rpb24gPSAoc2VsZWN0ZWRfcXVlc3Rpb24gLSAxICsgUFJFU0VUX1FVRVNUSU9OUykgJSBQUkVTRVRfUVVFU1RJT05TOyBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF9DT05UUk9MTEVSX0JVVFRPTl9EUEFEX0RPV046ICBzZWxlY3RlZF9xdWVzdGlvbiA9IChzZWxlY3RlZF9xdWVzdGlvbiArIDEpICUgUFJFU0VUX1FVRVNUSU9OUzsgYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExfQ09OVFJPTExFUl9CVVRUT05fQTogewogICAgICAgICAgICAgICAgICAgICAgICBjb25zdCBjaGFyICpxID0gcHJlc2V0X3F1ZXN0aW9uc1tzZWxlY3RlZF9xdWVzdGlvbl07CiAgICAgICAgICAgICAgICAgICAgICAgIGFkZF9tZXNzYWdlKCZjaGF0c1tjdXJyZW50X2NoYXRdLCAidXNlciIsIHEpOwogICAgICAgICAgICAgICAgICAgICAgICBjaGFyIHJlc3BbTUFYX1JFU1BPTlNFX0xFTl07CiAgICAgICAgICAgICAgICAgICAgICAgIGlmIChzZW5kX3RvX2dlbWluaShxLCByZXNwLCBzaXplb2YocmVzcCkpKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgYWRkX21lc3NhZ2UoJmNoYXRzW2N1cnJlbnRfY2hhdF0sICJhc3Npc3RhbnQiLCByZXNwKTsKICAgICAgICAgICAgICAgICAgICAgICAgZWxzZQogICAgICAgICAgICAgICAgICAgICAgICAgICAgYWRkX21lc3NhZ2UoJmNoYXRzW2N1cnJlbnRfY2hhdF0sICJhc3Npc3RhbnQiLCAiRXJyb3IiKTsKICAgICAgICAgICAgICAgICAgICAgICAgYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgICAgIGNhc2UgU0RMX0NPTlRST0xMRVJfQlVUVE9OX0xFRlRTSE9VTERFUjogaWYgKGN1cnJlbnRfY2hhdCA+IDApIGN1cnJlbnRfY2hhdC0tOyBicmVhazsKICAgICAgICAgICAgICAgICAgICBjYXNlIFNETF9DT05UUk9MTEVSX0JVVFRPTl9SSUdIVFNIT1VMREVSOiBpZiAoY3VycmVudF9jaGF0IDwgY2hhdF9jb3VudC0xKSBjdXJyZW50X2NoYXQrKzsgYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExfQ09OVFJPTExFUl9CVVRUT05fWTogaWYgKGNoYXRfY291bnQgPCBNQVhfQ0hBVFMpIHsgY2xlYXJfY2hhdCgmY2hhdHNbY2hhdF9jb3VudF0pOyBjdXJyZW50X2NoYXQgPSBjaGF0X2NvdW50OyBjaGF0X2NvdW50Kys7IH0gYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgY2FzZSBTRExfQ09OVFJPTExFUl9CVVRUT05fU1RBUlQ6IHJ1bm5pbmcgPSBmYWxzZTsgYnJlYWs7CiAgICAgICAgICAgICAgICAgICAgZGVmYXVsdDogYnJlYWs7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgIH0KICAgICAgICAgICAgLy8gR2FtZSBjb250cm9sbGVyIGF4aXMgKGZvciB0cmlnZ2VycyBaTC9aUikKICAgICAgICAgICAgZWxzZSBpZiAoZS50eXBlID09IFNETF9DT05UUk9MTEVSQVhJU01PVElPTikgewogICAgICAgICAgICAgICAgaWYgKGUuY2F4aXMuYXhpcyA9PSBTRExfQ09OVFJPTExFUl9BWElTX1RSSUdHRVJMRUZUKSB7CiAgICAgICAgICAgICAgICAgICAgYm9vbCBwcmVzc2VkID0gKGUuY2F4aXMudmFsdWUgPiA4MDAwKTsKICAgICAgICAgICAgICAgICAgICBpZiAocHJlc3NlZCAmJiAhdHJpZ2dlcl9sZWZ0X3ByZXNzZWQpIHsKICAgICAgICAgICAgICAgICAgICAgICAgaW1wb3J0X2NoYXQoKTsKICAgICAgICAgICAgICAgICAgICAgICAgdHJpZ2dlcl9sZWZ0X3ByZXNzZWQgPSB0cnVlOwogICAgICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgICAgICAgICBpZiAoIXByZXNzZWQpIHRyaWdnZXJfbGVmdF9wcmVzc2VkID0gZmFsc2U7CiAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICBlbHNlIGlmIChlLmNheGlzLmF4aXMgPT0gU0RMX0NPTlRST0xMRVJfQVhJU19UUklHR0VSUklHSFQpIHsKICAgICAgICAgICAgICAgICAgICBib29sIHByZXNzZWQgPSAoZS5jYXhpcy52YWx1ZSA+IDgwMDApOwogICAgICAgICAgICAgICAgICAgIGlmIChwcmVzc2VkICYmICF0cmlnZ2VyX3JpZ2h0X3ByZXNzZWQpIHsKICAgICAgICAgICAgICAgICAgICAgICAgZXhwb3J0X2NoYXQoKTsKICAgICAgICAgICAgICAgICAgICAgICAgdHJpZ2dlcl9yaWdodF9wcmVzc2VkID0gdHJ1ZTsKICAgICAgICAgICAgICAgICAgICB9CiAgICAgICAgICAgICAgICAgICAgaWYgKCFwcmVzc2VkKSB0cmlnZ2VyX3JpZ2h0X3ByZXNzZWQgPSBmYWxzZTsKICAgICAgICAgICAgICAgIH0KICAgICAgICAgICAgfQogICAgICAgICAgICAvLyBUb3VjaHNjcmVlbgogICAgICAgICAgICBlbHNlIGlmIChlLnR5cGUgPT0gU0RMX0ZJTkdFUkRPV04pIHsKICAgICAgICAgICAgICAgIGZsb2F0IHR5ID0gZS50ZmluZ2VyLnkgKiA3MjA7CiAgICAgICAgICAgICAgICBpZiAodHkgPiA1ODAgJiYgdHkgPCA1ODAgKyBQUkVTRVRfUVVFU1RJT05TICogNDApIHsKICAgICAgICAgICAgICAgICAgICBpbnQgaW5kZXggPSAoaW50KSh0eSAtIDU4MCkgLyA0MDsKICAgICAgICAgICAgICAgICAgICBpZiAoaW5kZXggPj0gMCAmJiBpbmRleCA8IFBSRVNFVF9RVUVTVElPTlMpIHsKICAgICAgICAgICAgICAgICAgICAgICAgc2VsZWN0ZWRfcXVlc3Rpb24gPSBpbmRleDsKICAgICAgICAgICAgICAgICAgICAgICAgY29uc3QgY2hhciAqcSA9IHByZXNldF9xdWVzdGlvbnNbc2VsZWN0ZWRfcXVlc3Rpb25dOwogICAgICAgICAgICAgICAgICAgICAgICBhZGRfbWVzc2FnZSgmY2hhdHNbY3VycmVudF9jaGF0XSwgInVzZXIiLCBxKTsKICAgICAgICAgICAgICAgICAgICAgICAgY2hhciByZXNwW01BWF9SRVNQT05TRV9MRU5dOwogICAgICAgICAgICAgICAgICAgICAgICBpZiAoc2VuZF90b19nZW1pbmkocSwgcmVzcCwgc2l6ZW9mKHJlc3ApKSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFkZF9tZXNzYWdlKCZjaGF0c1tjdXJyZW50X2NoYXRdLCAiYXNzaXN0YW50IiwgcmVzcCk7CiAgICAgICAgICAgICAgICAgICAgICAgIGVsc2UKICAgICAgICAgICAgICAgICAgICAgICAgICAgIGFkZF9tZXNzYWdlKCZjaGF0c1tjdXJyZW50X2NoYXRdLCAiYXNzaXN0YW50IiwgIkVycm9yIik7CiAgICAgICAgICAgICAgICAgICAgfQogICAgICAgICAgICAgICAgfQogICAgICAgICAgICB9CiAgICAgICAgfQogICAgICAgIHJlbmRlcl9jaGF0KCk7CiAgICAgICAgU0RMX0RlbGF5KDE2KTsKICAgIH0KCiAgICBUVFZfQ2xvc2VGb250KGZvbnQpOwogICAgaWYgKGN0cmwpIFNETF9HYW1lQ29udHJvbGxlckNsb3NlKGN0cmwpOwogICAgU0RMX0Rlc3Ryb3lSZW5kZXJlcihyZW5kZXJlcik7CiAgICBTRExfRGVzdHJveVdpbmRvdyh3aW5kb3cpOwogICAgVFRGX1F1aXQoKTsKICAgIFNETF9RdWl0KCk7CiAgICByZXR1cm4gMDsKfQo=" | base64 -d > main.c
+          cat > main.c <<'EOF'
+          // ================================================================
+          // main.c – Gemini AI Chat Client for Nintendo Switch
+          // ================================================================
+          // All features: up to 10 chats, L/R switch, Y new,
+          // ZL (trigger) import, ZR (trigger) export,
+          // D‑pad select preset questions, A send,
+          // touch support, Plus exit.
+          // Uses SDL2, SDL2_ttf, libcurl, jansson.
+          // ================================================================
+
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <stdbool.h>
+          #include <sys/stat.h>
+          #include <unistd.h>
+
+          #include <SDL2/SDL.h>
+          #include <SDL2/SDL_ttf.h>
+          #include <curl/curl.h>
+          #include <jansson.h>
+
+          // Constants
+          #define MAX_CHATS           10
+          #define MAX_MESSAGES         50
+          #define MAX_TEXT_LEN       1024
+          #define PRESET_QUESTIONS     6
+          #define MAX_RESPONSE_LEN   4096
+
+          #define GEMINI_API_KEY "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
+          #define API_URL "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key="
+
+          #define IMPORT_PATH   "/switch/GeminiSwitch/import.txt"
+          #define EXPORT_PATH   "/switch/GeminiSwitch/chat_export.txt"
+
+          typedef struct {
+              char role[10];
+              char text[MAX_TEXT_LEN];
+          } Message;
+
+          typedef struct {
+              Message msgs[MAX_MESSAGES];
+              int msg_count;
+          } Chat;
+
+          static Chat chats[MAX_CHATS];
+          static int  chat_count = 1;
+          static int  current_chat = 0;
+
+          static const char *preset_questions[] = {
+              "What is the meaning of life?",
+              "Explain quantum computing in simple terms.",
+              "Give me a recipe for chocolate cake.",
+              "Write a haiku about the ocean.",
+              "What are the benefits of exercise?",
+              "Tell me a joke."
+          };
+          static int selected_question = 0;
+
+          static SDL_Window   *window = NULL;
+          static SDL_Renderer *renderer = NULL;
+          static TTF_Font     *font = NULL;
+          static bool running = true;
+
+          static bool trigger_left_pressed = false;
+          static bool trigger_right_pressed = false;
+
+          static void ensure_dir(const char *path) {
+              char tmp[256];
+              char *p = NULL;
+              snprintf(tmp, sizeof(tmp), "%s", path);
+              for (p = tmp + 1; *p; p++) {
+                  if (*p == '/') {
+                      *p = 0;
+                      mkdir(tmp, 0755);
+                      *p = '/';
+                  }
+              }
+              mkdir(tmp, 0755);
+          }
+
+          static void add_message(Chat *chat, const char *role, const char *text) {
+              if (chat->msg_count >= MAX_MESSAGES) return;
+              Message *msg = &chat->msgs[chat->msg_count++];
+              strncpy(msg->role, role, sizeof(msg->role)-1);
+              strncpy(msg->text, text, sizeof(msg->text)-1);
+              msg->text[sizeof(msg->text)-1] = '\0';
+          }
+
+          static void clear_chat(Chat *chat) {
+              chat->msg_count = 0;
+          }
+
+          static size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
+              size_t total = size * nmemb;
+              char **response_ptr = (char**)userp;
+              *response_ptr = realloc(*response_ptr, strlen(*response_ptr) + total + 1);
+              if (!*response_ptr) return 0;
+              strncat(*response_ptr, (char*)contents, total);
+              return total;
+          }
+
+          static bool send_to_gemini(const char *user_text, char *response_out, size_t out_size) {
+              CURL *curl;
+              CURLcode res;
+              char *json_payload = NULL;
+              char *response_data = NULL;
+              bool success = false;
+
+              json_t *root = json_object();
+              json_t *contents = json_array();
+              json_t *parts = json_array();
+              json_t *part = json_object();
+              json_t *text_obj = json_string(user_text);
+              json_object_set(part, "text", text_obj);
+              json_array_append(parts, part);
+              json_t *parts_container = json_object();
+              json_object_set(parts_container, "parts", parts);
+              json_array_append(contents, parts_container);
+              json_object_set(root, "contents", contents);
+
+              json_payload = json_dumps(root, JSON_COMPACT);
+              json_decref(root);
+
+              char url[512];
+              snprintf(url, sizeof(url), "%s%s", API_URL, GEMINI_API_KEY);
+
+              curl_global_init(CURL_GLOBAL_ALL);
+              curl = curl_easy_init();
+              if (curl) {
+                  struct curl_slist *headers = NULL;
+                  headers = curl_slist_append(headers, "Content-Type: application/json");
+
+                  curl_easy_setopt(curl, CURLOPT_URL, url);
+                  curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload);
+                  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+                  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+                  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_data);
+                  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+                  res = curl_easy_perform(curl);
+                  if (res == CURLE_OK && response_data) {
+                      json_error_t error;
+                      json_t *root_resp = json_loads(response_data, 0, &error);
+                      if (root_resp) {
+                          json_t *candidates = json_object_get(root_resp, "candidates");
+                          if (candidates && json_is_array(candidates)) {
+                              json_t *first = json_array_get(candidates, 0);
+                              if (first) {
+                                  json_t *content = json_object_get(first, "content");
+                                  if (content) {
+                                      json_t *parts_arr = json_object_get(content, "parts");
+                                      if (parts_arr && json_is_array(parts_arr)) {
+                                          json_t *first_part = json_array_get(parts_arr, 0);
+                                          if (first_part) {
+                                              json_t *text_json = json_object_get(first_part, "text");
+                                              if (text_json && json_is_string(text_json)) {
+                                                  const char *text = json_string_value(text_json);
+                                                  strncpy(response_out, text, out_size-1);
+                                                  response_out[out_size-1] = '\0';
+                                                  success = true;
+                                              }
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                          json_decref(root_resp);
+                      }
+                  }
+                  curl_easy_cleanup(curl);
+                  curl_slist_free_all(headers);
+              }
+              curl_global_cleanup();
+
+              free(json_payload);
+              free(response_data);
+              return success;
+          }
+
+          static void import_chat() {
+              FILE *f = fopen(IMPORT_PATH, "r");
+              if (!f) return;
+              char line[MAX_TEXT_LEN];
+              if (fgets(line, sizeof(line), f)) {
+                  line[strcspn(line, "\n")] = '\0';
+                  add_message(&chats[current_chat], "user", line);
+                  char response[MAX_RESPONSE_LEN];
+                  if (send_to_gemini(line, response, sizeof(response))) {
+                      add_message(&chats[current_chat], "assistant", response);
+                  } else {
+                      add_message(&chats[current_chat], "assistant", "Error: API call failed.");
+                  }
+              }
+              fclose(f);
+              remove(IMPORT_PATH);
+          }
+
+          static void export_chat() {
+              ensure_dir("/switch/GeminiSwitch");
+              FILE *f = fopen(EXPORT_PATH, "w");
+              if (!f) return;
+              Chat *chat = &chats[current_chat];
+              for (int i = 0; i < chat->msg_count; i++) {
+                  fprintf(f, "%s: %s\n", chat->msgs[i].role, chat->msgs[i].text);
+              }
+              fclose(f);
+          }
+
+          static void render_text(SDL_Renderer *ren, TTF_Font *font,
+                                  const char *text, int x, int y,
+                                  SDL_Color color, SDL_Rect *rect_out) {
+              SDL_Surface *surf = TTF_RenderUTF8_Blended(font, text, color);
+              if (!surf) return;
+              SDL_Texture *tex = SDL_CreateTextureFromSurface(ren, surf);
+              SDL_Rect rect = {x, y, surf->w, surf->h};
+              SDL_RenderCopy(ren, tex, NULL, &rect);
+              if (rect_out) *rect_out = rect;
+              SDL_FreeSurface(surf);
+              SDL_DestroyTexture(tex);
+          }
+
+          static void render_chat() {
+              SDL_SetRenderDrawColor(renderer, 30, 30, 30, 255);
+              SDL_RenderClear(renderer);
+
+              SDL_Rect chat_area = {10, 10, 1220, 550};
+              SDL_SetRenderDrawColor(renderer, 50, 50, 50, 255);
+              SDL_RenderFillRect(renderer, &chat_area);
+
+              Chat *chat = &chats[current_chat];
+              int y = 20;
+              int max_y = 540;
+              SDL_Color user_color = {100, 200, 255, 255};
+              SDL_Color ass_color = {200, 255, 200, 255};
+              for (int i = 0; i < chat->msg_count && y < max_y; i++) {
+                  char label[20];
+                  snprintf(label, sizeof(label), "%s: ", chat->msgs[i].role);
+                  char combined[MAX_TEXT_LEN + 20];
+                  snprintf(combined, sizeof(combined), "%s%s", label, chat->msgs[i].text);
+                  SDL_Color col = (strcmp(chat->msgs[i].role, "user") == 0) ? user_color : ass_color;
+                  SDL_Rect rect;
+                  render_text(renderer, font, combined, 20, y, col, &rect);
+                  y += rect.h + 5;
+                  if (y > max_y) break;
+              }
+
+              int q_x = 20, q_y = 580, q_spacing = 40;
+              SDL_Color q_normal = {200, 200, 200, 255};
+              SDL_Color q_selected = {255, 255, 100, 255};
+              for (int i = 0; i < PRESET_QUESTIONS; i++) {
+                  SDL_Color col = (i == selected_question) ? q_selected : q_normal;
+                  SDL_Rect rect;
+                  render_text(renderer, font, preset_questions[i], q_x, q_y + i*q_spacing, col, &rect);
+              }
+
+              char info[256];
+              snprintf(info, sizeof(info), "Chat %d/%d | L/R: switch | Y: new | ZL(trigger): import | ZR(trigger): export | Plus: exit",
+                       current_chat+1, chat_count);
+              SDL_Color info_col = {180, 180, 180, 255};
+              render_text(renderer, font, info, 20, 700, info_col, NULL);
+
+              SDL_RenderPresent(renderer);
+          }
+
+          int main(int argc, char *argv[]) {
+              if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+                  printf("SDL_Init failed\n");
+                  return 1;
+              }
+              if (TTF_Init() < 0) {
+                  printf("TTF_Init failed\n");
+                  return 1;
+              }
+
+              window = SDL_CreateWindow("Gemini", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+                                        1280, 720, SDL_WINDOW_SHOWN);
+              if (!window) {
+                  printf("Window creation failed\n");
+                  return 1;
+              }
+              renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+              if (!renderer) {
+                  printf("Renderer creation failed\n");
+                  return 1;
+              }
+
+              font = TTF_OpenFont("romfs:/Roboto-Regular.ttf", 22);
+              if (!font) {
+                  printf("Font load from romfs failed, trying local...\n");
+                  font = TTF_OpenFont("Roboto-Regular.ttf", 22);
+                  if (!font) {
+                      printf("Font load failed\n");
+                      return 1;
+                  }
+              }
+
+              SDL_GameController *ctrl = NULL;
+              for (int i = 0; i < SDL_NumJoysticks(); i++) {
+                  if (SDL_IsGameController(i)) {
+                      ctrl = SDL_GameControllerOpen(i);
+                      break;
+                  }
+              }
+
+              clear_chat(&chats[0]);
+
+              while (running) {
+                  SDL_Event e;
+                  while (SDL_PollEvent(&e)) {
+                      if (e.type == SDL_QUIT) { running = false; }
+
+                      // Keyboard (PC testing)
+                      else if (e.type == SDL_KEYDOWN) {
+                          switch (e.key.keysym.sym) {
+                              case SDLK_UP:    selected_question = (selected_question - 1 + PRESET_QUESTIONS) % PRESET_QUESTIONS; break;
+                              case SDLK_DOWN:  selected_question = (selected_question + 1) % PRESET_QUESTIONS; break;
+                              case SDLK_RETURN:
+                              case SDLK_SPACE: {
+                                  const char *q = preset_questions[selected_question];
+                                  add_message(&chats[current_chat], "user", q);
+                                  char resp[MAX_RESPONSE_LEN];
+                                  if (send_to_gemini(q, resp, sizeof(resp)))
+                                      add_message(&chats[current_chat], "assistant", resp);
+                                  else
+                                      add_message(&chats[current_chat], "assistant", "Error");
+                                  break;
+                              }
+                              case SDLK_l: case SDLK_LEFT:  if (current_chat > 0) current_chat--; break;
+                              case SDLK_r: case SDLK_RIGHT: if (current_chat < chat_count-1) current_chat++; break;
+                              case SDLK_y: if (chat_count < MAX_CHATS) { clear_chat(&chats[chat_count]); current_chat = chat_count; chat_count++; } break;
+                              case SDLK_i: import_chat(); break;
+                              case SDLK_e: export_chat(); break;
+                              case SDLK_ESCAPE: running = false; break;
+                              default: break;
+                          }
+                      }
+                      // Game controller buttons
+                      else if (e.type == SDL_CONTROLLERBUTTONDOWN) {
+                          SDL_GameControllerButton btn = e.cbutton.button;
+                          switch (btn) {
+                              case SDL_CONTROLLER_BUTTON_DPAD_UP:    selected_question = (selected_question - 1 + PRESET_QUESTIONS) % PRESET_QUESTIONS; break;
+                              case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  selected_question = (selected_question + 1) % PRESET_QUESTIONS; break;
+                              case SDL_CONTROLLER_BUTTON_A: {
+                                  const char *q = preset_questions[selected_question];
+                                  add_message(&chats[current_chat], "user", q);
+                                  char resp[MAX_RESPONSE_LEN];
+                                  if (send_to_gemini(q, resp, sizeof(resp)))
+                                      add_message(&chats[current_chat], "assistant", resp);
+                                  else
+                                      add_message(&chats[current_chat], "assistant", "Error");
+                                  break;
+                              }
+                              case SDL_CONTROLLER_BUTTON_LEFTSHOULDER: if (current_chat > 0) current_chat--; break;
+                              case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: if (current_chat < chat_count-1) current_chat++; break;
+                              case SDL_CONTROLLER_BUTTON_Y: if (chat_count < MAX_CHATS) { clear_chat(&chats[chat_count]); current_chat = chat_count; chat_count++; } break;
+                              case SDL_CONTROLLER_BUTTON_START: running = false; break;
+                              default: break;
+                          }
+                      }
+                      // Game controller triggers (axis)
+                      else if (e.type == SDL_CONTROLLERAXISMOTION) {
+                          if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) {
+                              bool pressed = (e.caxis.value > 8000);
+                              if (pressed && !trigger_left_pressed) {
+                                  import_chat();
+                                  trigger_left_pressed = true;
+                              }
+                              if (!pressed) trigger_left_pressed = false;
+                          }
+                          else if (e.caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) {
+                              bool pressed = (e.caxis.value > 8000);
+                              if (pressed && !trigger_right_pressed) {
+                                  export_chat();
+                                  trigger_right_pressed = true;
+                              }
+                              if (!pressed) trigger_right_pressed = false;
+                          }
+                      }
+                      // Touchscreen
+                      else if (e.type == SDL_FINGERDOWN) {
+                          float ty = e.tfinger.y * 720;
+                          if (ty > 580 && ty < 580 + PRESET_QUESTIONS * 40) {
+                              int index = (int)((ty - 580) / 40);
+                              if (index >= 0 && index < PRESET_QUESTIONS) {
+                                  selected_question = index;
+                                  const char *q = preset_questions[selected_question];
+                                  add_message(&chats[current_chat], "user", q);
+                                  char resp[MAX_RESPONSE_LEN];
+                                  if (send_to_gemini(q, resp, sizeof(resp)))
+                                      add_message(&chats[current_chat], "assistant", resp);
+                                  else
+                                      add_message(&chats[current_chat], "assistant", "Error");
+                              }
+                          }
+                      }
+                  }
+                  render_chat();
+                  SDL_Delay(16);
+              }
+
+              TTF_CloseFont(font);
+              if (ctrl) SDL_GameControllerClose(ctrl);
+              SDL_DestroyRenderer(renderer);
+              SDL_DestroyWindow(window);
+              TTF_Quit();
+              SDL_Quit();
+              return 0;
+          }
+          EOF
 
       - name: Build NRO
         id: build_nro
@@ -98,91 +551,3 @@ jobs:
           path: ${{ steps.build_nro.outputs.nro_path }}
           retention-days: 30
           if-no-files-found: error
-
-      # --------------------------------------------------------------------
-      # Redundant steps to pad to 2000+ lines (safe)
-      # --------------------------------------------------------------------
-      - name: Redundant 1
-        run: curl --version
-      - name: Redundant 2
-        run: convert -version | head -1
-      - name: Redundant 3
-        run: ls -la $DEVKITPRO
-      - name: Redundant 4
-        run: grep -r "NX_VERSION" $DEVKITPRO/libnx/include/switch.h || true
-      - name: Redundant 5
-        run: ls -la $PORTLIBS/include/jansson.h
-      - name: Redundant 6
-        run: ls -la $ROMFS_DIR/Roboto-Regular.ttf
-      - name: Redundant 7
-        run: identify icon.jpg
-      - name: Redundant 8
-        run: aarch64-none-elf-gcc -E -dM - < /dev/null | head -10
-      - name: Redundant 9
-        run: env | grep -E "DEVKIT|PATH"
-      - name: Redundant 10
-        run: df -h
-      - name: Redundant 11
-        run: free -m
-      - name: Redundant 12
-        run: find . -type f | sort
-      - name: Redundant 13
-        run: ls -la *.o 2>/dev/null || echo "No object files"
-      - name: Redundant 14
-        run: ls -la ${{ env.APP_NAME }}.elf 2>/dev/null || echo "No elf file"
-      - name: Redundant 15
-        run: sha256sum ${{ steps.build_nro.outputs.nro_path }} || echo "No NRO"
-      - name: Redundant 16
-        run: md5sum ${{ steps.build_nro.outputs.nro_path }} || echo "No NRO"
-      - name: Redundant 17
-        run: aarch64-none-elf-nm $PORTLIBS/lib/libSDL2.a | grep SDL_Init | head -1 || true
-      - name: Redundant 18
-        run: aarch64-none-elf-nm $PORTLIBS/lib/libcurl.a | grep curl_easy_init | head -1 || true
-      - name: Redundant 19
-        run: aarch64-none-elf-nm $PORTLIBS/lib/libjansson.a | grep json_object | head -1 || true
-      - name: Redundant 20
-        run: aarch64-none-elf-nm $PORTLIBS/lib/libSDL2_ttf.a | grep TTF_Init | head -1 || true
-      - name: Redundant 21
-        run: make --version | head -1
-      - name: Redundant 22
-        run: git --version
-      - name: Redundant 23
-        run: tar --version | head -1
-      - name: Redundant 24
-        run: gzip --version | head -1
-      - name: Redundant 25
-        run: unzip -v | head -1
-      - name: Redundant 26
-        run: file --version | head -1
-      - name: Redundant 27
-        run: xxd -version | head -1
-      - name: Redundant 28
-        run: jq --version
-      - name: Redundant 29
-        run: tree --version | head -1
-      - name: Redundant 30
-        run: pwd
-      - name: Redundant 31
-        run: ls -la ..
-      - name: Redundant 32
-        run: cat /etc/os-release | head -3
-      - name: Redundant 33
-        run: cat $DEVKITPRO/libnx/switch_rules | head -5 || echo "rules file exists"
-      - name: Redundant 34
-        run: which elf2nro
-      - name: Redundant 35
-        run: which npdmtool || echo "npdmtool not needed"
-      - name: Redundant 36
-        run: which hacbrewpack || echo "hacbrewpack not needed"
-      - name: Redundant 37
-        run: echo "All checks passed – NRO is ready."
-      - name: Redundant 38
-        run: echo "Build successful."
-      - name: Redundant 39
-        run: echo "You can now convert to NSP using hacbrewpack."
-      - name: Redundant 40
-        run: echo "Title ID: 0100ABCD12340000, App: Gemini, Author: Google LLC."
-      - name: Redundant 41
-        run: echo "Done."
-      - name: Redundant 42
-        run: echo "End of workflow."
