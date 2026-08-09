@@ -15,7 +15,7 @@ jobs:
         mkdir -p romfs switch/GeminiSwitch exefs
         wget -qO romfs/Roboto-Regular.ttf "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf"
 
-    - name: Create source
+    - name: Create source (FIXED)
       run: |
         cat > main.c << 'EOF'
         #include <stdio.h>
@@ -77,7 +77,8 @@ jobs:
         }
 
         void txt(const char*t,int x,int y,SDL_Color c){
-          if(!f||!t)return;SDL_Surface*s=TTF_RenderUTF8_Blended(f,t,c);
+          if(!f||!t)return;
+          SDL_Surface*s=TTF_RenderUTF8_Blended(f,t,c);
           if(s){SDL_Texture*tex=SDL_CreateTextureFromSurface(r,s);
             if(tex){SDL_Rect d={x,y,s->w,s->h};SDL_RenderCopy(r,tex,0,&d);SDL_DestroyTexture(tex);}
             SDL_FreeSurface(s);}
@@ -99,9 +100,10 @@ jobs:
           }
           SDL_SetRenderDrawColor(r,40,42,58,255);SDL_Rect pa={0,550,1280,170};SDL_RenderFillRect(r,&pa);
           SDL_SetRenderDrawColor(r,79,172,254,255);SDL_RenderDrawLine(r,0,550,1280,550);
-          snprintf(b,128,"[%d/%d] %s",app.p+1,20,qs[app.p]);txt(b,565,(SDL_Color){79,172,254,255});
-          txt("D-Pad:Select A:Send Y:New L/R:Sess ZL:Import ZR:Exp +:Exit",600,(SDL_Color){255,255,255,255});
-          if(app.load)txt("Waiting...",635,(SDL_Color){241,250,140,255});else txt(app.st,635,(SDL_Color){255,255,255,255});
+          snprintf(b,128,"[%d/%d] %s",app.p+1,20,qs[app.p]);
+          txt(b,20,565,(SDL_Color){79,172,254,255});
+          txt("D-Pad:Select A:Send Y:New L/R:Sess ZL:Import ZR:Exp +:Exit",20,600,(SDL_Color){255,255,255,255});
+          if(app.load)txt("Waiting...",20,635,(SDL_Color){241,250,140,255});else txt(app.st,20,635,(SDL_Color){255,255,255,255});
           SDL_RenderPresent(r);
         }
 
@@ -164,3 +166,4 @@ jobs:
       with:
         name: nsp
         path: "*.nsp"
+        
