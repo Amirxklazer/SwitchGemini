@@ -29,7 +29,7 @@ jobs:
             echo "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAeAB4DASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYI0RVNfSVJCc0oNKCk6O0xNTk9SVFdVYSFk5O/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooA//Z" | base64 -d > icon.jpg
           fi
 
-      - name: Write main.c (Text-only Gemini)
+      - name: Write main.c (Fixed for current libnx)
         run: |
           cat << 'EOF' > main.c
           #include <stdio.h>
@@ -40,6 +40,7 @@ jobs:
           #include <SDL2/SDL_ttf.h>
           #include <curl/curl.h>
           #include <jansson.h>
+          #include <sys/stat.h>
 
           #define SCREEN_W 1280
           #define SCREEN_H 720
@@ -243,26 +244,30 @@ jobs:
 
           char* getKeyboardInput() {
               SwkbdInline swkbd;
-              R_ABORT_UNLESS(swkbdInlineCreate(&swkbd));
-              SwkbdInlineAppearArg appearArg;
-              swkbdInlineMakeAppearArg(&appearArg, SwkbdType_Normal);
-              swkbdInlineAppearArgSetOkButtonText(&appearArg, "Ask");
-              swkbdInlineLaunchForLibraryApplet(&swkbd, SwkbdInlineMode_UserDisplay, &appearArg);
+              if (R_FAILED(swkbdInlineCreate(&swkbd)))
+                  return NULL;
+
+              // Use the older libnx inline keyboard API (no appear arg)
+              swkbdInlineLaunchForLibraryApplet(&swkbd, SwkbdInlineMode_UserDisplay, 0);
+
               char inputText[512] = "";
               while (appletMainLoop()) {
                   SDL_Event e; while (SDL_PollEvent(&e)) {}
                   padUpdate(&pad);
                   u64 kDown = padGetButtonsDown(&pad);
-                  if (kDown & HidNpadButton_B) { swkbdInlineClose(&swkbd); return NULL; }
-                  SwkbdInlineState state = swkbdInlineUpdate(&swkbd, NULL);
-                  if (state == SwkbdInlineState_Finished) {
-                      SwkbdInlineResult res = swkbdInlineGetResult(&swkbd, inputText, sizeof(inputText));
+                  if (kDown & HidNpadButton_B) {
                       swkbdInlineClose(&swkbd);
-                      if (res == SwkbdInlineResult_Ok && strlen(inputText) > 0)
+                      return NULL;
+                  }
+                  SwkbdState state = swkbdInlineUpdate(&swkbd, NULL);
+                  if (state == SwkbdState_Finished) {
+                      SwkbdResult res = swkbdInlineGetResult(&swkbd, inputText, sizeof(inputText));
+                      swkbdInlineClose(&swkbd);
+                      if (res == SwkbdResult_Ok && strlen(inputText) > 0)
                           return strdup(inputText);
                       return NULL;
-                  } else if (state == SwkbdInlineState_Appearing) {
-                      swkbdInlineAppear(&swkbd);
+                  } else if (state == SwkbdState_Appearing) {
+                      swkbdInlineAppear(&swkbd, NULL);
                   }
               }
               swkbdInlineClose(&swkbd);
@@ -295,10 +300,11 @@ jobs:
                   u64 kDown = padGetButtonsDown(&pad);
 
                   int scrollDelta = 0;
-                  if (kDown & HidNpadButton_Down || pad.lk_LY > 20000) scrollDelta = 30;
-                  if (kDown & HidNpadButton_Up || pad.lk_LY < -20000) scrollDelta = -30;
-                  if (pad.rk_LY > 20000) scrollDelta = 60;
-                  if (pad.rk_LY < -20000) scrollDelta = -60;
+                  // Use correct analog stick members: pad.ly (left Y), pad.ry (right Y)
+                  if (kDown & HidNpadButton_Down || pad.ly > 20000) scrollDelta = 30;
+                  if (kDown & HidNpadButton_Up || pad.ly < -20000) scrollDelta = -30;
+                  if (pad.ry > 20000) scrollDelta = 60;
+                  if (pad.ry < -20000) scrollDelta = -60;
                   scrollOffset += scrollDelta;
                   if (scrollOffset < 0) scrollOffset = 0;
 
