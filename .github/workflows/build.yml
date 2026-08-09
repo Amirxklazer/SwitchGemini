@@ -18,31 +18,26 @@ jobs:
       
     - name: Setup directories
       run: |
-        mkdir -p romfs
-        mkdir -p switch/GeminiSwitch
-        mkdir -p build
+        mkdir -p romfs switch/GeminiSwitch build exefs
         
     - name: Download Roboto font
       run: |
         wget -q "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" \
-          -O romfs/Roboto-Regular.ttf || \
-        curl -sL "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" \
-          -o romfs/Roboto-Regular.ttf
+          -O romfs/Roboto-Regular.ttf || curl -sL "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" -o romfs/Roboto-Regular.ttf
         ls -la romfs/
         
-    - name: Create source files
+    - name: Create main.c source file
       run: |
-        cat > main.c << 'MAINCODE'
+        cat > main.c << 'EOF'
         #include <stdio.h>
         #include <stdlib.h>
         #include <string.h>
-        #include <unistd.h>
         #include <switch.h>
         #include <SDL2/SDL.h>
         #include <SDL2/SDL_ttf.h>
         #include <curl/curl.h>
-        <jansson.h>
-        
+        #include <jansson.h>
+
         #define MAX_SESSIONS 10
         #define MAX_MESSAGES 50
         #define MAX_MSG_LEN 4096
@@ -50,13 +45,10 @@ jobs:
         #define SCREEN_WIDTH 1280
         #define SCREEN_HEIGHT 720
         #define FONT_SIZE 22
-        
-        // API Configuration
         #define API_KEY "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
         #define API_URL "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-        
-        // Preset questions for D-Pad selection
-        static const char* PRESET_QUESTIONS[MAX_PRESETS] = {
+
+        static const char* PRESETS[MAX_PRESETS] = {
             "Hello! How are you today?",
             "What is artificial intelligence?",
             "Explain quantum computing simply",
@@ -78,805 +70,288 @@ jobs:
             "How do I stay motivated?",
             "Give me productivity tips"
         };
-        
+
+        typedef struct { char text[4096]; int is_user; } Message;
         typedef struct {
-            char text[MAX_MSG_LEN];
-            int is_user;
-        } Message;
-        
+            Message msgs[50]; int count; char title[64];
+        } Session;
         typedef struct {
-            Message messages[MAX_MESSAGES];
-            int message_count;
-            char title[64];
-        } ChatSession;
-        
-        typedef struct {
-            ChatSession sessions[MAX_SESSIONS];
-            int current_session;
-            int total_sessions;
-            int selected_preset;
-            int scroll_offset;
-            int is_loading;
-            char status_text[256];
+            Session sessions[10]; int cur, total, preset, loading;
+            char status[256];
         } AppState;
-        
+
         static AppState app;
-        static SDL_Window *window = NULL;
-        static SDL_Renderer *renderer = NULL;
-        static TTF_Font *font = NULL;
-        
-        // CURL write callback
-        size_t write_callback(void *contents, size_t size, size_t nmemb, void *userp) {
-            size_t realsize = size * nmemb;
-            char *resp = (char *)userp;
-            strncat(resp, contents, realsize);
-            return realsize;
+        static SDL_Window *win;
+        static SDL_Renderer *rend;
+        static TTF_Font *font;
+        static int running = 1;
+
+        size_t write_cb(void *c, size_t s, size_t n, void *u) {
+            strncat((char*)u, c, s*n); return s*n;
         }
-        
-        // Call Gemini API
-        int call_gemini_api(const char *user_message, char *response) {
-            CURL *curl;
-            CURLcode res;
-            char url[512];
-            char post_data[8192];
-            json_t *root, *contents_arr, *content_obj, *parts_arr, *part_obj;
-            char *json_str;
+
+        int call_api(const char *msg, char *resp) {
+            CURL *curl = curl_easy_init();
+            if(!curl) return -1;
             
+            char url[512], post[8192];
             snprintf(url, sizeof(url), "%s?key=%s", API_URL, API_KEY);
+            snprintf(post, sizeof(post), 
+                "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}", msg);
             
-            // Build JSON request
-            root = json_object();
-            contents_arr = json_array();
+            resp[0] = 0;
+            struct curl_slist *h = curl_slist_append(NULL, "Content-Type: application/json");
+            curl_easy_setopt(curl, CURLOPT_URL, url);
+            curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post);
+            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, h);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, resp);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
             
-            // Add system instruction
-            content_obj = json_object();
-            parts_arr = json_array();
-            part_obj = json_string("You are a helpful AI assistant. Keep responses concise and clear.");
-            json_array_append_new(parts_arr, part_obj);
-            json_object_set_new(content_obj, "role", json_string("user"));
-            json_object_set_new(content_obj, "parts", parts_arr);
-            json_array_append_new(contents_arr, content_obj);
+            CURLcode res = curl_easy_perform(curl);
+            curl_slist_free_all(h);
+            curl_easy_cleanup(curl);
             
-            // Add user message
-            content_obj = json_object();
-            parts_arr = json_array();
-            part_obj = json_string(user_message);
-            json_array_append_new(parts_arr, part_obj);
-            json_object_set_new(content_obj, "role", json_string("user"));
-            json_object_set_new(content_obj, "parts", parts_arr);
-            json_array_append_new(contents_arr, content_obj);
+            if(res != CURLE_OK) { snprintf(resp, 4096, "Error: %s", curl_easy_strerror(res)); return -1; }
             
-            json_object_set_new(root, "contents", contents_arr);
+            json_error_t err;
+            json_t *root = json_loads(resp, 0, &err);
+            if(!root) return -1;
             
-            json_str = json_dumps(root, JSON_COMPACT);
-            snprintf(post_data, sizeof(post_data), "%s", json_str);
-            free(json_str);
+            json_t *cand = json_object_get(root, "candidates");
+            if(cand && json_array_size(cand) > 0) {
+                json_t *cont = json_object_get(json_array_get(cand,0), "content");
+                if(cont) {
+                    json_t *parts = json_object_get(cont, "parts");
+                    if(parts && json_array_size(parts) > 0) {
+                        const char *txt = json_string_value(json_object_get(json_array_get(parts,0),"text"));
+                        if(txt) { strncpy(resp, txt, 4095); resp[4095]=0; json_decref(root); return 0; }
+                    }
+                }
+            }
             json_decref(root);
-            
-            response[0] = '\0';
-            
-            curl = curl_easy_init();
-            if(curl) {
-                struct curl_slist *headers = NULL;
-                headers = curl_slist_append(headers, "Content-Type: application/json");
-                
-                curl_easy_setopt(curl, CURLOPT_URL, url);
-                curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
-                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-                curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
-                curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
-                curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-                
-                res = curl_easy_perform(curl);
-                
-                if(res != CURLE_OK) {
-                    snprintf(response, MAX_MSG_LEN, "API Error: %s", curl_easy_strerror(res));
-                    curl_easy_cleanup(curl);
-                    curl_slist_free_all(headers);
-                    return -1;
-                }
-                
-                curl_easy_cleanup(curl);
-                curl_slist_free_all(headers);
-                
-                // Parse response
-                json_error_t error;
-                root = json_loads(response, 0, &error);
-                if(!root) {
-                    snprintf(response, MAX_MSG_LEN, "JSON Parse Error");
-                    return -1;
-                }
-                
-                // Extract text from response
-                json_t *candidates = json_object_get(root, "candidates");
-                if(candidates && json_array_size(candidates) > 0) {
-                    json_t *candidate = json_array_get(candidates, 0);
-                    json_t *content = json_object_get(candidate, "content");
-                    if(content) {
-                        json_t *parts = json_object_get(content, "parts");
-                        if(parts && json_array_size(parts) > 0) {
-                            json_t *part = json_array_get(parts, 0);
-                            const char *text = json_string_value(json_object_get(part, "text"));
-                            if(text) {
-                                strncpy(response, text, MAX_MSG_LEN - 1);
-                                response[MAX_MSG_LEN - 1] = '\0';
-                                json_decref(root);
-                                return 0;
-                            }
-                        }
-                    }
-                }
-                
-                // Check for error in response
-                json_t *err = json_object_get(root, "error");
-                if(err) {
-                    json_t *msg = json_object_get(err, "message");
-                    if(msg) {
-                        strncpy(response, json_string_value(msg), MAX_MSG_LEN - 1);
-                    }
-                }
-                
-                json_decref(root);
-                return 0;
-            }
-            
-            return -1;
-        }
-        
-        void add_message(int session_idx, const char *text, int is_user) {
-            ChatSession *session = &app.sessions[session_idx];
-            if(session->message_count < MAX_MESSAGES) {
-                strncpy(session->messages[session->message_count].text, text, MAX_MSG_LEN - 1);
-                session->messages[session->message_count].text[MAX_MSG_LEN - 1] = '\0';
-                session->messages[session->message_count].is_user = is_user;
-                session->message_count++;
-            }
-        }
-        
-        void init_app() {
-            memset(&app, 0, sizeof(app));
-            app.current_session = 0;
-            app.total_sessions = 1;
-            app.selected_preset = 0;
-            app.scroll_offset = 0;
-            app.is_loading = 0;
-            strcpy(app.sessions[0].title, "Chat 1");
-            strcpy(app.status_text, "Press A to send preset question");
-        }
-        
-        void draw_rounded_rect(SDL_Renderer *rend, int x, int y, int w, int h, int radius, SDL_Color color) {
-            SDL_SetRenderDrawColor(rend, color.r, color.g, color.b, color.a);
-            
-            for(int i = 0; i < w; i++) {
-                for(int j = 0; j < h; j++) {
-                    int dx = i - radius;
-                    int dy = j - radius;
-                    int dx2 = i - (w - radius);
-                    int dy2 = j - (h - radius);
-                    
-                    if(i >= radius && i <= w - radius && j >= radius && j <= h - radius) {
-                        SDL_RenderDrawPoint(rend, x + i, y + j);
-                    } else if(i < radius && j < radius && dx*dx + dy*dy <= radius*radius) {
-                        SDL_RenderDrawPoint(rend, x + i, y + j);
-                    } else if(i >= w - radius && j < radius && dx2*dx2 + dy*dy <= radius*radius) {
-                        SDL_RenderDrawPoint(rend, x + i, y + j);
-                    } else if(i < radius && j >= h - radius && dx*dx + dy2*dy2 <= radius*radius) {
-                        SDL_RenderDrawPoint(rend, x + i, y + j);
-                    } else if(i >= w - radius && j >= h - radius && dx2*dx2 + dy2*dy2 <= radius*radius) {
-                        SDL_RenderDrawPoint(rend, x + i, y + j);
-                    } else if((i >= radius && i <= w - radius) || (j >= radius && j <= h - radius)) {
-                        SDL_RenderDrawPoint(rend, x + i, y + j);
-                    }
-                }
-            }
-        }
-        
-        void draw_text_wrapped(const char *text, int x, int y, int max_width, SDL_Color color) {
-            if(!font || !text) return;
-            
-            SDL_Surface *surface = TTF_RenderUTF8_Blended_Wrapped(font, text, color, max_width);
-            if(surface) {
-                SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
-                if(texture) {
-                    SDL_Rect dstrect = {x, y, surface->w, surface->h};
-                    SDL_RenderCopy(renderer, texture, NULL, &dstrect);
-                    SDL_DestroyTexture(texture);
-                }
-                SDL_FreeSurface(surface);
-            }
-        }
-        
-        void render() {
-            SDL_SetRenderDrawColor(renderer, 30, 30, 46, 255);
-            SDL_RenderClear(renderer);
-            
-            // Draw header background
-            SDL_SetRenderDrawColor(renderer, 49, 50, 68, 255);
-            SDL_Rect header_rect = {0, 0, SCREEN_WIDTH, 60};
-            SDL_RenderFillRect(renderer, &header_rect);
-            
-            // Draw header text
-            SDL_Color white = {255, 255, 255, 255};
-            SDL_Color cyan = {79, 172, 254, 255};
-            SDL_Color user_color = {88, 166, 255, 255};
-            SDL_Color ai_color = {139, 233, 253, 255};
-            SDL_Color bg_user = {49, 50, 68, 255};
-            SDL_Color bg_ai = {69, 71, 90, 255};
-            
-            char title_text[128];
-            snprintf(title_text, sizeof(title_text), "Gemini AI Chat - Session %d/%d", 
-                     app.current_session + 1, app.total_sessions);
-            draw_text_wrapped(title_text, 20, 18, SCREEN_WIDTH - 40, white);
-            
-            // Draw messages area
-            ChatSession *session = &app.sessions[app.current_session];
-            int msg_y = 80;
-            int visible_start = 0;
-            int visible_end = session->message_count;
-            
-            // Calculate which messages to show (simple scrolling)
-            int total_msg_height = 0;
-            for(int i = 0; i < session->message_count; i++) {
-                total_msg_height += 100; // Approximate height per message
-            }
-            
-            for(int i = 0; i < session->message_count; i++) {
-                Message *msg = &session->messages[i];
-                int bubble_x = msg->is_user ? SCREEN_WIDTH - 500 : 20;
-                SDL_Color bubble_color = msg->is_user ? bg_user : bg_ai;
-                SDL_Color text_color = msg->is_user ? user_color : ai_color;
-                
-                // Draw bubble
-                draw_rounded_rect(renderer, bubble_x, msg_y, 480, 80, 12, bubble_color);
-                
-                // Draw message text (truncated for display)
-                char display_text[200];
-                strncpy(display_text, msg->text, 195);
-                display_text[195] = '\0';
-                if(strlen(msg->text) > 195) strcat(display_text, "...");
-                draw_text_wrapped(display_text, bubble_x + 15, msg_y + 15, 450, text_color);
-                
-                // Draw label
-                const char *label = msg->is_user ? "You" : "Gemini";
-                draw_text_wrapped(label, bubble_x + 15, msg_y + 55, 100, white);
-                
-                msg_y += 95;
-                if(msg_y > SCREEN_HEIGHT - 180) break;
-            }
-            
-            // Draw preset selector area at bottom
-            SDL_SetRenderDrawColor(renderer, 40, 42, 58, 255);
-            SDL_Rect preset_area = {0, SCREEN_HEIGHT - 170, SCREEN_WIDTH, 170};
-            SDL_RenderFillRect(renderer, &preset_area);
-            
-            // Draw separator line
-            SDL_SetRenderDrawColor(renderer, 79, 172, 254, 255);
-            SDL_RenderDrawLine(renderer, 0, SCREEN_HEIGHT - 170, SCREEN_WIDTH, SCREEN_HEIGHT - 170);
-            
-            // Draw current preset
-            char preset_label[256];
-            snprintf(preset_label, sizeof(preset_label), "[%d/%d] %s", 
-                     app.selected_preset + 1, MAX_PRESETS, PRESET_QUESTIONS[app.selected_preset]);
-            draw_text_wrapped(preset_label, 20, SCREEN_HEIGHT - 160, SCREEN_WIDTH - 40, cyan);
-            
-            // Draw controls help
-            char controls[512];
-            snprintf(controls, sizeof(controls), 
-                     "D-Pad: Select | A: Send | Y: New Chat | L/R: Switch Session | ZL: Import | ZR: Export | +: Exit");
-            draw_text_wrapped(controls, 20, SCREEN_HEIGHT - 130, SCREEN_WIDTH - 40, white);
-            
-            // Draw status
-            if(app.is_loading) {
-                SDL_Color yellow = {241, 250, 140, 255};
-                draw_text_wrapped("⏳ Waiting for Gemini...", 20, SCREEN_HEIGHT - 100, SCREEN_WIDTH - 40, yellow);
-            } else {
-                draw_text_wrapped(app.status_text, 20, SCREEN_HEIGHT - 100, SCREEN_WIDTH - 40, white);
-            }
-            
-            // Draw loading indicator
-            if(app.is_loading) {
-                SDL_SetRenderDrawColor(renderer, 241, 250, 140, 255);
-                int dot_x = SCREEN_WIDTH / 2 + (SDL_GetTicks() / 100 % 5) * 20 - 40;
-                for(int i = 0; i < 3; i++) {
-                    SDL_Rect dot = {dot_x + i * 25, SCREEN_HEIGHT - 70, 15, 15};
-                    SDL_RenderFillRect(renderer, &dot);
-                }
-            }
-            
-            SDL_RenderPresent(renderer);
-        }
-        
-        void handle_input() {
-            hidScanInput();
-            u64 kDown = hidKeysDown(CONTROLLER_PAD_AUTO);
-            u64 kHeld = hidKeysHeld(CONTROLLER_PAD_AUTO);
-            
-            // Handle D-Pad for preset selection
-            if(kDown & KEY_DUP) {
-                app.selected_preset = (app.selected_preset - 1 + MAX_PRESETS) % MAX_PRESETS;
-                snprintf(app.status_text, sizeof(app.status_text), "Selected: %s", PRESET_QUESTIONS[app.selected_preset]);
-            }
-            if(kDown & KEY_DDOWN) {
-                app.selected_preset = (app.selected_preset + 1) % MAX_PRESETS;
-                snprintf(app.status_text, sizeof(app.status_text), "Selected: %s", PRESET_QUESTIONS[app.selected_preset]);
-            }
-            if(kDown & KEY_DLEFT) {
-                app.selected_preset = (app.selected_preset - 5 + MAX_PRESETS) % MAX_PRESETS;
-                snprintf(app.status_text, sizeof(app.status_text), "Selected: %s", PRESET_QUESTIONS[app.selected_preset]);
-            }
-            if(kDown & KEY_DRIGHT) {
-                app.selected_preset = (app.selected_preset + 5) % MAX_PRESETS;
-                snprintf(app.status_text, sizeof(app.status_text), "Selected: %s", PRESET_QUESTIONS[app.selected_preset]);
-            }
-            
-            // A button: Send selected preset
-            if(kDown & KEY_A && !app.is_loading) {
-                add_message(app.current_session, PRESET_QUESTIONS[app.selected_preset], 1);
-                app.is_loading = 1;
-                snprintf(app.status_text, sizeof(app.status_text), "Sending to Gemini...");
-                
-                char api_response[MAX_MSG_LEN] = {0};
-                int result = call_gemini_api(PRESET_QUESTIONS[app.selected_preset], api_response);
-                
-                if(result == 0 && strlen(api_response) > 0) {
-                    add_message(app.current_session, api_response, 0);
-                    snprintf(app.status_text, sizeof(app.status_text), "Response received!");
-                } else {
-                    add_message(app.current_session, "Error getting response. Check connection.", 0);
-                    snprintf(app.status_text, sizeof(app.status_text), "Error: %s", api_response);
-                }
-                
-                app.is_loading = 0;
-            }
-            
-            // Y button: New chat session
-            if(kDown & KEY_Y && !app.is_loading) {
-                if(app.total_sessions < MAX_SESSIONS) {
-                    app.current_session = app.total_sessions;
-                    app.total_sessions++;
-                    snprintf(app.sessions[app.current_session].title, 64, "Chat %d", app.total_sessions);
-                    snprintf(app.status_text, sizeof(app.status_text), "Created new chat session");
-                } else {
-                    // Reuse oldest or show message
-                    snprintf(app.status_text, sizeof(app.status_text), "Max sessions reached (%d)", MAX_SESSIONS);
-                }
-            }
-            
-            // L/R buttons: Switch between sessions
-            if(kDown & KEY_L && !app.is_loading) {
-                app.current_session = (app.current_session - 1 + app.total_sessions) % app.total_sessions;
-                snprintf(app.status_text, sizeof(app.status_text), "Switched to Session %d", app.current_session + 1);
-            }
-            if(kDown & KEY_R && !app.is_loading) {
-                app.current_session = (app.current_session + 1) % app.total_sessions;
-                snprintf(app.status_text, sizeof(app.status_text), "Switched to Session %d", app.current_session + 1);
-            }
-            
-            // ZL: Import from file
-            if(kDown & KEY_ZL && !app.is_loading) {
-                FILE *f = fopen("switch/GeminiSwitch/import.txt", "r");
-                if(f) {
-                    char buffer[MAX_MSG_LEN] = {0};
-                    if(fgets(buffer, MAX_MSG_LEN, f)) {
-                        // Remove newline
-                        buffer[strcspn(buffer, "\n\r")] = 0;
-                        if(strlen(buffer) > 0) {
-                            add_message(app.current_session, buffer, 1);
-                            snprintf(app.status_text, sizeof(app.status_text), "Imported: %.50s...", buffer);
-                            
-                            // Auto-send to API
-                            app.is_loading = 1;
-                            char api_response[MAX_MSG_LEN] = {0};
-                            call_gemini_api(buffer, api_response);
-                            if(strlen(api_response) > 0) {
-                                add_message(app.current_session, api_response, 0);
-                            }
-                            app.is_loading = 0;
-                        }
-                    }
-                    fclose(f);
-                } else {
-                    snprintf(app.status_text, sizeof(app.status_text), "No import.txt found");
-                }
-            }
-            
-            // ZR: Export chat to file
-            if(kDown & KEY_ZR && !app.is_loading) {
-                FILE *f = fopen("switch/GeminiSwitch/chat_export.txt", "w");
-                if(f) {
-                    ChatSession *session = &app.sessions[app.current_session];
-                    fprintf(f, "=== GeminiSwitch Chat Export ===\n");
-                    fprintf(f, "Session: %s\n\n", session->title);
-                    
-                    for(int i = 0; i < session->message_count; i++) {
-                        fprintf(f, "[%s]: %s\n\n", 
-                               session->messages[i].is_user ? "User" : "Gemini",
-                               session->messages[i].text);
-                    }
-                    
-                    fclose(f);
-                    snprintf(app.status_text, sizeof(app.status_text), "Exported to chat_export.txt");
-                } else {
-                    snprintf(app.status_text, sizeof(app.status_text), "Export failed");
-                }
-            }
-            
-            // Plus button: Exit
-            if(kDown & KEY_PLUS) {
-                running = 0;
-            }
-        }
-        
-        int main(int argc, char **argv) {
-            // Initialize ROMFS
-            romfsInit();
-            
-            // Initialize SDL
-            if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
-                socketExit();
-                romfsExit();
-                return -1;
-            }
-            
-            // Initialize TTF
-            if(TTF_Init() != 0) {
-                SDL_Quit();
-                socketExit();
-                romfsExit();
-                return -1;
-            }
-            
-            // Load font from ROMFS
-            char font_path[256];
-            snprintf(font_path, sizeof(font_path, "romfs:/Roboto-Regular.ttf");
-            font = TTF_OpenFont(font_path, FONT_SIZE);
-            if(!font) {
-                // Fallback: try without path prefix
-                font = TTF_OpenFont("Roboto-Regular.ttf", FONT_SIZE);
-            }
-            if(!font) {
-                SDL_Quit();
-                socketExit();
-                romfsExit();
-                return -1;
-            }
-            
-            // Create window and renderer
-            window = SDL_CreateWindow("GeminiSwitch",
-                                      SDL_WINDOWPOS_CENTERED,
-                                      SDL_WINDOWPOS_CENTERED,
-                                      SCREEN_WIDTH, SCREEN_HEIGHT,
-                                      SDL_WINDOW_SHOWN);
-            if(!window) {
-                TTF_CloseFont(font);
-                TTF_Quit();
-                SDL_Quit();
-                socketExit();
-                romfsExit();
-                return -1;
-            }
-            
-            renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-            if(!renderer) {
-                SDL_DestroyWindow(window);
-                TTF_CloseFont(font);
-                TTF_Quit();
-                SDL_Quit();
-                socketExit();
-                romfsExit();
-                return -1;
-            }
-            
-            // Initialize network (for curl)
-            socketInitializeDefault();
-            
-            // Initialize libnx services
-            padConfigureInput(1, PadNpadJoyConPair);
-            
-            // Initialize app state
-            init_app();
-            
-            // Main loop
-            while(appletMainLoop()) {
-                handle_input();
-                render();
-                
-                if(!running) break;
-                
-                // Cap framerate
-                SDL_Delay(16); // ~60 FPS
-            }
-            
-            // Cleanup
-            SDL_DestroyRenderer(renderer);
-            SDL_DestroyWindow(window);
-            TTF_CloseFont(font);
-            TTF_Quit();
-            SDL_Quit();
-            socketExit();
-            romfsExit();
-            
             return 0;
         }
-        MAINCODE
-        
-        cat > Makefile << 'MAKEFILE'
-        #---------------------------------------------------------------------------------
-        # .SUFFIXES
-        #---------------------------------------------------------------------------------
-        .SUFFIXES:
-        
-        export TOPDIR := $(CURDIR)
-        
-        #---------------------------------------------------------------------------------
-        # TARGET is the name of the output
-        # BUILD is the directory where object files & intermediate files will be placed
-        # SOURCES is a list of directories containing source code
-        # DATA is a list of directories containing data files
-        # INCLUDES is a list of directories containing extra header files
-        #---------------------------------------------------------------------------------
-        TARGET		:=	GeminiSwitch
-        BUILD		:=	build
-        SOURCES		:=	source
-        DATA		:=	data
-        INCLUDES	:=	include
-        ROMFS		:=	romfs
-        
-        #---------------------------------------------------------------------------------
-        # options for code generation
-        #---------------------------------------------------------------------------------
-        ARCH	:=	-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec
-        
-        CFLAGS	:=	-g -Wall -O2 -ffunction-sections \
-                    $(ARCH) $(DEFINES)
-        
-        CFLAGS	+=	$(INCLUDE) -D__SWITCH__
-        
-        CXXFLAGS	:= $(CFLAGS) -std=c++17 -fno-rtti -fno-exceptions
-        
-        ASFLAGS	:=	-g $(ARCH)
-        
-        # Explicit paths - bypassing pkg-config
-        DEVKITPRO := $(shell echo $$DEVKITPRO)
-        SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch
-        
-        SDL2_INC := -I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2
-        SDL2_LIBS := -L$(SDL2_PREFIX)/lib -lSDL2 -lSDL2_ttf -lcurl -ljansson
-        
-        INCLUDE := $(SDL2_INC) -I$(DEVKITPRO)/libnx/include
-        LIBS := -L$(DEVKITPRO)/libnx/lib -L$(SDL2_PREFIX)/lib -lnx $(SDL2_LIBS)
-        
-        #---------------------------------------------------------------------------------
-        # list of directories containing libraries, this must be the top level containing
-        # include and lib
-        #---------------------------------------------------------------------------------
-        LIBDIRS	:= $(PORTLIBS) $(LIBNX)
-        
-        #---------------------------------------------------------------------------------
-        # no real need to edit anything past this point unless you need to add different
-        # rules for additional build variants.
-        #---------------------------------------------------------------------------------
-        
-        ifneq ($(BUILD),$(notdir $(CURDIR)))
-        
-        #---------------------------------------------------------------------------------
-        export OUTPUT	:=	$(CURDIR)/$(TARGET)
-        export TOPDIR	:=	$(CURDIR)
-        export VPATH	:=	$(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
-                            $(foreach dir,$(DATA),$(CURDIR)/$(dir))
-        
-        export DEPSDIR	:=	$(CURDIR)/$(BUILD)
-        
-        CFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
-        CPPFILES	:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
-        SFILES		:=	$(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)*.s)))
-        BINFILES	:=	$(foreach dir,$(DATA),$(notdir $(wildcard $(data)/*.*)))
-        
-        #---------------------------------------------------------------------------------
-        # use CXX for linking C++ projects, CC for standard C
-        #---------------------------------------------------------------------------------
-        EXPORT_LD := $(CXX)
-        
-        #---------------------------------------------------------------------------------
-        ifeq ($(strip $(CPPFILES)),)
-            #-------------------------------------------------------------------------------
-            export LD	:=	$(CC)
-            #-------------------------------------------------------------------------------
-        else
-            #-------------------------------------------------------------------------------
-            export LD	:=	$(CXX)
-            #-------------------------------------------------------------------------------
-        endif
-        
-        #---------------------------------------------------------------------------------
-        export OFILES_BIN	:=	$(addsuffix .o,$(BINFILES))
-        export OFILES_SRC	:=	$(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
-        export OFILES 	:=	$(OFILES_BIN) $(OFILES_SRC)
-        export HFILES	:=	$(addsuffix .h,$(subst .o,,$(OFILES_SRC)))
-        
-        #---------------------------------------------------------------------------------
-        export INCLUDE	:=	$(foreach dir,$(INCLUDES),-iquote $(CURDIR)/$(dir)) \
-                            $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-                            $(INCLUDE)
-        
-        #---------------------------------------------------------------------------------
-        .PHONY: $(BUILD) clean all
-        
-        #---------------------------------------------------------------------------------
-        all: $(BUILD)
-        
-        $(BUILD):
-            @[ -d $@ ] || mkdir -p $@
-            @$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
-        
-        #---------------------------------------------------------------------------------
-        clean:
-            @echo clean ...
-            @rm -fr $(BUILD) $(TARGET).elf $(TARGET).nro $(TARGET).nacp $(TARGET).nsp
-        
-        #---------------------------------------------------------------------------------
-        else
-        
-        DEPENDS	:=	$(OFILES:.o=.d)
-        
-        #---------------------------------------------------------------------------------
-        # main targets
-        #---------------------------------------------------------------------------------
-        $(OUTPUT).nro	: 	$(OUTPUT).elf $(OUTPUT).nacp
-        $(OUTPUT).elf	:	$(OFILES)
-        
-        $(OFILES_SRC) : $(HFILES)
-        
-        #---------------------------------------------------------------------------------
-        # you need a rule like this for each extension you use as binary data
-        #---------------------------------------------------------------------------------
-        %.bin.o	:	%.bin
-            @echo $(notdir $<)
-            @$(bin2o)
-        
-        #---------------------------------------------------------------------------------
-        # rules for assembling assembly files
-        #---------------------------------------------------------------------------------
-        %.o : %.s
-            @echo $(notdir $<)
-            @$(AS) -c $(ASFLAGS) -o $@ $<
-        
-        #---------------------------------------------------------------------------------
-        # rules for compiling C/C++ files
-        #---------------------------------------------------------------------------------
-        %.o : %.cpp
-            @echo $(notdir $<)
-            @$(CXX) -MMD -MP -MF $(DEPSDIR)/$*.d $(CXXFLAGS) -c -o $@ $<
-        
-        %.o : %.c
-            @echo $(notdir $<)
-            @$(CC) -MMD -MP -MF $(DEPSDIR)/$*.d $(CFLAGS) -c -o $@ $<
-        
-        #---------------------------------------------------------------------------------
-        # Linking
-        #---------------------------------------------------------------------------------
-        $(OUTPUT).elf : $(OFILES)
-            @echo linking ...
-            @$(LD) $(LDFLAGS) $(OFILES) $(LIBS) -o $@
-            @$(NM) -CSn $@ > $(notdir $*.lst)
-        
-        #---------------------------------------------------------------------------------
-        # NACP metadata
-        #---------------------------------------------------------------------------------
-        $(OUTPUT).nacp : $(OUTPUT).nacp.json
-            nacptool --create "Gemini" "Google LLC" "0100ABCD12340000" $< $@
-        
-        # Generate NACP JSON
-        $(OUTPUT).nacp.json :
-            echo '{"name":"Gemini","author":"Google LLC","version":"1.0.0","appid":"0100ABCD12340000"}' > $@
-        
-        #---------------------------------------------------------------------------------
-        # NRO creation
-        #---------------------------------------------------------------------------------
-        $(OUTPUT).nro : $(OUTPUT).elf $(OUTPUT).nacp
-            elf2nro $< $@ $(OUTPUT).nacp --romfsdir=$(ROMFS)
-        
-        #---------------------------------------------------------------------------------
-        # NSP creation
-        #---------------------------------------------------------------------------------
-        $(OUTPUT).nsp : $(OUTPUT).nro
-            @echo Creating NSP...
-            @mkdir -p exefs
-            @cp $(OUTPUT).nro exefs/main.nro
-            @npdmtool --json='{"name":"Gemini","appid":"0100ABCD12340000","title_type":0,"nso_auto_start":true}' exefs/main.npdm
-            @nspBuild -i exefs -o $(OUTPUT).nsp --keyset $(DEVKITPRO)/libnx/keys.txt
-            @echo NSP created: $(OUTPUT).nsp
-        
-        #---------------------------------------------------------------------------------
-        endif
-        #---------------------------------------------------------------------------------
-        MAKEFILE
-        
-        cat > main.nacp.json << 'NACPCONFIG'
-        {
-          "name": "Gemini",
-          "author": "Google LLC",
-          "version": "1.0.0",
-          "appid": "0100ABCD12340000"
+
+        void add_msg(int idx, const char *txt, int user) {
+            Session *s = &app.sessions[idx];
+            if(s->count < 50) {
+                strncpy(s->msgs[s->count].text, txt, 4095);
+                s->msgs[s->count].is_user = user;
+                s->count++;
+            }
         }
-        NACPCONFIG
+
+        void init_app() {
+            memset(&app,0,sizeof(app));
+            app.total=1; app.cur=0; app.preset=0; app.loading=0;
+            strcpy(app.sessions[0].title,"Chat 1");
+            strcpy(app.status,"Press A to send question");
+        }
+
+        void draw_text(const char *t, int x, int y, SDL_Color c) {
+            if(!font||!t) return;
+            SDL_Surface *sf = TTF_RenderUTF8_Blended(font,t,c);
+            if(sf) {
+                SDL_Texture *tx = SDL_CreateTextureFromSurface(rend,sf);
+                if(tx) { SDL_Rect r={x,y,sf->w,sf->h}; SDL_Copy(rend,tx,NULL,r); SDL_DestroyTexture(tx); }
+                SDL_FreeSurface(sf);
+            }
+        }
+
+        void render() {
+            SDL_SetRenderDrawColor(rend,30,30,46,255);
+            SDL_RenderClear(rend);
+            
+            SDL_SetRenderDrawColor(rend,49,50,68,255);
+            SDL_Rect hdr={0,0,1280,60};
+            SDL_RenderFillRect(rend,&hdr);
+            
+            SDL_Color white={255,255,255,255}, cyan={79,172,254,255};
+            char t[128];
+            snprintf(t,sizeof(t),"Gemini AI - Session %d/%d", app.cur+1, app.total);
+            draw_text(t,20,18,white);
+            
+            Session *s=&app.sessions[app.cur];
+            int y=80;
+            for(int i=0;i<s->count&&y<540;i++) {
+                Message *m=&s->msgs[i];
+                int bx=m->is_user?760:20;
+                SDL_Color bc={49,50,68,255}, tc={88,166,255,255};
+                if(!m->is_user) { bc=(SDL_Color){69,71,90,255}; tc=(SDL_Color){139,233,253,255}; }
+                
+                SDL_SetRenderDrawColor(rend,bc.r,bc.g,bc.b,255);
+                SDL_Rect br={bx,y,500,80};
+                SDL_RenderFillRect(rend,&br);
+                
+                char d[200]; strncpy(d,m->text,195); d[195]=0;
+                if(strlen(m->text)>195) strcat(d,"...");
+                draw_text(d,bx+15,y+15,tc);
+                draw_text(m->is_user?"You":"Gemini",bx+15,y+55,white);
+                y+=95;
+            }
+            
+            SDL_SetRenderDrawColor(rend,40,42,58,255);
+            SDL_Rect pa={0,550,1280,170};
+            SDL_RenderFillRect(rend,&pa);
+            SDL_SetRenderDrawColor(rend,79,172,254,255);
+            SDL_RenderDrawLine(rend,0,550,1280,550);
+            
+            snprintf(t,sizeof(t),"[%d/%d] %s",app.preset+1,MAX_PRESETS,PRESETS[app.preset]);
+            draw_text(t,20,565,cyan);
+            draw_text("D-Pad:Select A:Send Y:New L/R:Switch ZL:Import ZR:Export +:Exit",20,600,white);
+            
+            if(app.loading) {
+                SDL_Color yel={241,250,140,255};
+                draw_text("Waiting for Gemini...",20,635,yel);
+            } else {
+                draw_text(app.status,20,635,white);
+            }
+            
+            SDL_RenderPresent(rend);
+        }
+
+        void handle_input() {
+            hidScanInput();
+            u64 k=hidKeysDown(CONTROLLER_PAND_AUTO);
+            
+            if(k&KEY_DUP) { app.preset=(app.preset-1+MAX_PRESETS)%MAX_PRESETS; snprintf(app.status,sizeof(app.status),"Selected: %s",PRESETS[app.preset]); }
+            if(k&KEY_DDOWN) { app.preset=(app.preset+1)%MAX_PRESETS; snprintf(app.status,sizeof(app.status),"Selected: %s",PRESETS[app.preset]); }
+            if(k&KEY_DLEFT) { app.preset=(app.preset-5+MAX_PRESETS)%MAX_PRESETS; }
+            if(k&KEY_DRIGHT) { app.preset=(app.preset+5)%MAX_PRESETS; }
+            
+            if(k&KEY_A&&!app.loading) {
+                add_msg(app.cur,PRESETS[app.preset],1);
+                app.loading=1; strcpy(app.status,"Sending to Gemini...");
+                char r[4096]={0};
+                call_api(PRESETS[app.preset],r);
+                if(strlen(r)>0) add_msg(app.cur,r,0);
+                else add_msg(app.cur,"No response.",0);
+                app.loading=0; strcpy(app.status,"Done");
+            }
+            
+            if(k&KEY_Y&&!app.loading&&app.total<MAX_SESSIONS) {
+                app.total++; app.cur=app.total-1;
+                snprintf(app.sessions[app.cur].title,64,"Chat %d",app.total);
+                snprintf(app.status,sizeof(app.status),"New session created");
+            }
+            
+            if(k&KEY_L&&!app.loading) { app.cur=(app.cur-1+app.total)%app.total; snprintf(app.status,sizeof(app.status),"Session %d",app.cur+1); }
+            if(k&KEY_R&&!app.loading) { app.cur=(app.cur+1)%app.total; snprintf(app.status,sizeof(app.status),"Session %d",app.cur+1); }
+            
+            if(k&KEY_ZL&&!app.loading) {
+                FILE*f=fopen("switch/GeminiSwitch/import.txt","r");
+                if(f) { char b[4096]={0}; if(fgets(b,4095,f)) { b[strcspn(b,"\n")]=0; if(*b) { add_msg(app.cur,b,1); app.loading=1; char r[4096]={0}; call_api(b,r); if(*r)add_msg(app.cur,r,0); app.loading=0; }} fclose(f); strcpy(app.status,"Imported"); }
+                else strcpy(app.status,"No import.txt");
+            }
+            
+            if(k&KEY_ZR&&!app.loading) {
+                FILE*f=fopen("switch/GeminiSwitch/chat_export.txt","w");
+                if(f) { Session*s=&app.sessions[app.cur]; fprintf(f,"=== Export ===\n"); for(int i=0;i<s->count;i++) fprintf(f,"[%s]: %s\n\n",s->msgs[i].is_user?"User":"Gemini",s->msgs[i].text); fclose(f); strcpy(app.status,"Exported"); }
+                else strcpy(app.status,"Export failed");
+            }
+            
+            if(k&KEY_PLUS) running=0;
+        }
+
+        int main() {
+            romfsInit();
+            socketInitializeDefault();
+            padConfigureInput(1,PadNpadJoyConPair);
+            
+            if(SDL_Init(SDL_INIT_VIDEO)<0) return -1;
+            if(TTF_Init()<0) { SDL_Quit(); return -1; }
+            
+            font=TTF_OpenFont("romfs:/Roboto-Regular.ttf",FONT_SIZE);
+            if(!font) { TTF_Quit(); SDL_Quit(); return -1; }
+            
+            win=SDL_CreateWindow("Gemini",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,1280,720,SDL_WINDOW_SHOWN);
+            if(!win) { TTF_CloseFont(font); TTF_Quit(); SDL_Quit(); return -1; }
+            
+            rend=SDL_CreateRenderer(win,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
+            if(!rend) { SDL_DestroyWindow(win); TTF_CloseFont(font); TTF_Quit(); SDL_Quit(); return -1; }
+            
+            init_app();
+            while(appletMainLoop()) { handle_input(); render(); if(!running) break; SDL_Delay(16); }
+            
+            SDL_DestroyRenderer(rend); SDL_DestroyWindow(win); TTF_CloseFont(font); TTF_Quit(); SDL_Quit(); socketExit(); romfsExit();
+            return 0;
+        }
+        EOF
         
-        echo "Source files created successfully"
-        ls -la *.c *.h Makefile 2>/dev/null || true
+    - name: Create Makefile with proper tabs
+      run: |
+        printf '%s\n' \
+        'TARGET := GeminiSwitch' \
+        'BUILD := build' \
+        'SOURCES := .' \
+        'ROMFS := romfs' \
+        '' \
+        'ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec' \
+        'CFLAGS := -g -Wall -O2 -ffunction-sections $(ARCH) -D__SWITCH__' \
+        '' \
+        'DEVKITPRO ?= /opt/devkitpro' \
+        'SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch' \
+        '' \
+        'INCLUDE := -I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2 -I$(DEVKITPRO)/libnx/include' \
+        'LIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx' \
+        'LIBDIRS := $(SDL2_PREFIX)/lib $(DEVKITPRO)/libnx/lib' \
+        '' \
+        'CFILES := $(wildcard *.c)' \
+        'OFILES := $(CFILES:.c=.o)' \
+        '' \
+        '.PHONY: all clean' \
+        '' \
+        'all: $(TARGET).nsp' \
+        '' \
+        '$(TARGET).elf: $(OFILES)' \
+        '	$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2_PREFIX)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)' \
+        '' \
+        '$(TARGET).nacp:' \
+        '	echo "{\"name\":\"Gemini\",\"author\":\"Google LLC\",\"version\":\"1.0.0\",\"appid\":\"0100ABCD12340000\"}" > main.nacp.json' \
+        '	nacptool --json main.nacp.json $@' \
+        '' \
+        '$(TARGET).nro: $(TARGET).elf $(TARGET).nacp' \
+        '	elf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)' \
+        '' \
+        '$(TARGET).nsp: $(TARGET).nro' \
+        '	mkdir -p exefs' \
+        '	cp $(TARGET).nro exefs/main.nro' \
+        '	npdmtool --json="{\"name\":\"Gemini\",\"appid\":\"0100ABCD12340000\"}" exefs/main.npdm' \
+        '	nspBuild -i exefs -o $@' \
+        '' \
+        '%.o: %.c' \
+        '	$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@' \
+        '' \
+        'clean:' \
+        '	rm -f $(OFILES) $(TARGET).elf $(TARGET).nacp $(TARGET).nro $(TARGET).nsp main.nacp.json' \
+        '	rm -rf exefs' \
+        '' > Makefile
+        
+        echo "=== Makefile created ==="
+        cat -A Makefile | head -30
+        echo ""
+        echo "Checking for tabs..."
+        grep -P '^\t' Makefile | wc -l
         
     - name: Build project
       run: |
         export DEVKITPRO=/opt/devkitpro
         export PATH=$DEVKITPRO/tools/bin:$PATH
+        make -j$(nproc)
         
-        make -j$(nproc) 2>&1 || {
-            echo "=== BUILD FAILED - Checking for issues ===";
-            echo "Checking for main.c...";
-            ls -la *.c 2>/dev/null || echo "No .c files found";
-            echo "Checking Makefile...";
-            ls -la Makefile 2>/dev/null || echo "No Makefile found";
-            echo "Checking includes...";
-            ls -la /opt/devkitpro/portlibs/switch/include/SDL2/ 2>/dev/null | head -20;
-            exit 1;
-        }
-        
-    - name: Verify build artifacts
+    - name: Verify output
       run: |
-        echo "=== Build Artifacts ==="
-        ls -la *.nro *.nsp *.elf 2>/dev/null || echo "No artifacts found"
-        
-        if [ -f "GeminiSwitch.nsp" ]; then
-            echo "✅ NSP created successfully!"
-            file GeminiSwitch.nsp
-            du -h GeminiSwitch.nsp
-        elif [ -f "GeminiSwitch.nro" ]; then
-            echo "⚠️ Only NRO created, attempting NSP conversion..."
-            ls -la
+        echo "=== Build Results ==="
+        ls -la *.nsp *.nro *.elf 2>/dev/null || true
+        if [ -f GeminiSwitch.nsp ]; then
+          echo "✅ SUCCESS! NSP created:"
+          du -h GeminiSwitch.nsp
+          file GeminiSwitch.nsp
         fi
         
-    - name: Upload NSP artifact
+    - name: Upload artifacts
       uses: actions/upload-artifact@v4
       with:
         name: geminiswitch-nsp
-        path: |
-          *.nsp
-          *.nro
-        retention-days: 30
-        
-    - name: Release preparation
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: softprops/action-gh-release@v1
-      with:
-        files: |
-          *.nsp
-          *.nro
-        name: GeminiSwitch v${{ github.ref_name }}
-        body: |
-          ## GeminiSwitch - Nintendo Switch AI Chat Client
-          
-          ### Installation
-          1. Copy the `.nsp` file to your SD card
-          2. Install using your preferred installer (Tinfoil, Awoo Installer, etc.)
-          3. Launch from the Home Menu
-          
-          ### Controls
-          - **D-Pad**: Scroll through preset questions
-          - **A**: Send selected question to Gemini
-          - **Y**: Create new chat session
-          - **L/R**: Switch between chat sessions (max 10)
-          - **ZL**: Import message from `/switch/GeminiSwitch/import.txt`
-          - **ZR**: Export chat to `/switch/GeminiSwitch/chat_export.txt`
-          - **Plus (+)**: Exit application
-          
-          ### Features
-          - Multiple chat sessions (up to 10)
-          - 20 preset questions to choose from
-          - Real-time responses from Google Gemini 2.0 Flash
-          - Import/export functionality
-          - Beautiful SDL2-based UI
-          
-          ### Notes
-          - Requires internet connection for API calls
-          - Place `import.txt` in `/switch/GeminiSwitch/` for importing
-        draft: false
-        prerelease: false
+        path: "*.nsp"
