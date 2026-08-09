@@ -14,7 +14,12 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Install all required libraries
+      - name: Install system dependencies (ImageMagick)
+        run: |
+          apt-get update -qq
+          apt-get install -y imagemagick
+
+      - name: Install all required Switch libraries
         run: |
           dkp-pacman -Sy --noconfirm
           dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-sdl2_image \
