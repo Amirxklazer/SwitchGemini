@@ -1,0 +1,609 @@
+name: Gemini Switch NSP (Full)
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: devkitpro/devkita64:latest
+
+    steps:
+      - name: Checkout Source
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          dkp-pacman -Sy --noconfirm
+          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-curl switch-jansson --noconfirm
+
+      - name: Download Font
+        run: |
+          mkdir -p romfs
+          cd romfs
+          curl -L -o Roboto-Regular.ttf "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Regular.ttf"
+
+      - name: Prepare Icon (custom or default)
+        run: |
+          if [ -f icon.png ]; then
+            apt-get update -qq && apt-get install -y -qq imagemagick
+            convert icon.png -resize 256x256! -background white -flatten icon.jpg
+          else
+            # Default icon (a simple gradient-like JPEG in base64)
+            echo "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAeAB4DASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYI0RVNfSVJCc0oNKCk6O0xNTk9SVFdVYSFk5O/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooA//Z" | base64 -d > icon.jpg
+          fi
+
+      - name: Write main.c (Gemini + Voice + Full Controls)
+        run: |
+          cat << 'EOF' > main.c
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <math.h>
+          #include <switch.h>
+          #include <SDL2/SDL.h>
+          #include <SDL2/SDL_ttf.h>
+          #include <curl/curl.h>
+          #include <jansson.h>
+          #include <switch/audin.h>
+
+          #define SCREEN_W 1280
+          #define SCREEN_H 720
+
+          #define MAX_MSG_LEN 1024
+          #define MAX_MESSAGES 100
+          #define MAX_CHATS 10
+
+          #define BG_COLOR     0x1A1A2E
+          #define USER_BUBBLE  0x16213E
+          #define AI_BUBBLE    0x0F3460
+          #define TEXT_WHITE   0xFFFFFF
+          #define ACCENT_COLOR 0xE94560
+
+          #define VOICE_SAMPLE_RATE 16000
+          #define VOICE_MAX_SECONDS 10
+
+          // Hardcoded API key – you provided it!
+          const char* API_KEY = "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg";
+
+          typedef struct {
+              char text[MAX_MSG_LEN];
+              int isUser;
+          } Message;
+
+          typedef struct {
+              Message messages[MAX_MESSAGES];
+              int msgCount;
+          } Chat;
+
+          static Chat chats[MAX_CHATS];
+          static int currentChatIndex = 0;
+          static int chatCount = 1;
+
+          static SDL_Renderer* renderer;
+          static TTF_Font* font;
+          static TTF_Font* fontSmall;
+          static PadState pad;
+
+          void drawRect(SDL_Renderer* r, int x, int y, int w, int h, u32 color) {
+              SDL_SetRenderDrawColor(r, (color>>16)&0xFF, (color>>8)&0xFF, color&0xFF, 255);
+              SDL_Rect rc = {x, y, w, h};
+              SDL_RenderFillRect(r, &rc);
+          }
+
+          void drawTextWrapped(SDL_Renderer* r, TTF_Font* f, int x, int y, int maxW,
+                               const char* text, u32 color) {
+              if (!text || strlen(text)==0) return;
+              SDL_Color c = {(color>>16)&0xFF, (color>>8)&0xFF, color&0xFF, 255};
+              int lineH;
+              TTF_SizeText(f, "A", NULL, &lineH);
+              lineH += 2;
+              char* copy = strdup(text);
+              char* token = strtok(copy, " ");
+              char line[512] = "";
+              int curY = y;
+              while (token) {
+                  char temp[512];
+                  snprintf(temp, sizeof(temp), "%s %s", line, token);
+                  int w;
+                  TTF_SizeText(f, temp, &w, NULL);
+                  if (w > maxW) {
+                      SDL_Surface* s = TTF_RenderUTF8_Blended(f, line, c);
+                      if (s) {
+                          SDL_Texture* t = SDL_CreateTextureFromSurface(r, s);
+                          SDL_Rect dst = {x, curY, s->w, s->h};
+                          SDL_RenderCopy(r, t, NULL, &dst);
+                          SDL_FreeSurface(s);
+                          SDL_DestroyTexture(t);
+                      }
+                      strcpy(line, token);
+                      curY += lineH;
+                  } else {
+                      strcpy(line, temp);
+                  }
+                  token = strtok(NULL, " ");
+              }
+              if (strlen(line)>0) {
+                  SDL_Surface* s = TTF_RenderUTF8_Blended(f, line, c);
+                  if (s) {
+                      SDL_Texture* t = SDL_CreateTextureFromSurface(r, s);
+                      SDL_Rect dst = {x, curY, s->w, s->h};
+                      SDL_RenderCopy(r, t, NULL, &dst);
+                      SDL_FreeSurface(s);
+                      SDL_DestroyTexture(t);
+                  }
+              }
+              free(copy);
+          }
+
+          void addMessage(const char* text, int isUser) {
+              Chat* chat = &chats[currentChatIndex];
+              if (chat->msgCount >= MAX_MESSAGES) {
+                  for (int i=1; i<MAX_MESSAGES; i++)
+                      chat->messages[i-1] = chat->messages[i];
+                  chat->msgCount = MAX_MESSAGES-1;
+              }
+              strncpy(chat->messages[chat->msgCount].text, text, MAX_MSG_LEN-1);
+              chat->messages[chat->msgCount].isUser = isUser;
+              chat->msgCount++;
+          }
+
+          void renderChat(int scrollOffset) {
+              SDL_SetRenderDrawColor(renderer, 0x1A,0x1A,0x2E,255);
+              SDL_RenderClear(renderer);
+
+              drawRect(renderer, 0,0,SCREEN_W,50,0x16213E);
+              drawTextWrapped(renderer, font, 20,10,200,"Gemini AI",TEXT_WHITE);
+              char hints[128];
+              snprintf(hints, sizeof(hints), "A:Type X:Voice Y:New L/R:Chat ZL:Import ZR:Export +:Exit");
+              drawTextWrapped(renderer, fontSmall, 150,15,600,hints,0xAAAAAA);
+
+              Chat* chat = &chats[currentChatIndex];
+              int maxY = SCREEN_H-80;
+              int curY = maxY - scrollOffset;
+              for (int i=chat->msgCount-1; i>=0; i--) {
+                  Message* msg = &chat->messages[i];
+                  int bubbleX = msg->isUser ? SCREEN_W-520 : 20;
+                  int bubbleW = 500;
+                  u32 bg = msg->isUser ? USER_BUBBLE : AI_BUBBLE;
+                  int lineH;
+                  TTF_SizeText(font, "A", NULL, &lineH);
+                  lineH += 2;
+                  int usableW = bubbleW-40;
+                  char* copy = strdup(msg->text);
+                  char* token = strtok(copy, " ");
+                  char tmp[512]="";
+                  int lines=1;
+                  while (token) {
+                      char test[512];
+                      snprintf(test,sizeof(test),"%s %s",tmp,token);
+                      int w;
+                      TTF_SizeText(font, test, &w, NULL);
+                      if (w > usableW) { lines++; strcpy(tmp,token); }
+                      else strcpy(tmp,test);
+                      token = strtok(NULL," ");
+                  }
+                  free(copy);
+                  int bubbleH = lines*lineH+20;
+                  if (curY-bubbleH-4 < 50) break;
+                  curY -= bubbleH;
+                  drawRect(renderer, bubbleX, curY, bubbleW, bubbleH, bg);
+                  drawTextWrapped(renderer, font, bubbleX+10, curY+10, usableW, msg->text, TEXT_WHITE);
+                  curY -= 4;
+              }
+
+              SDL_RenderPresent(renderer);
+          }
+
+          // Voice recording (simplified: direct audio buffer capture)
+          int recordVoice(u8* buffer, int maxBytes) {
+              if (R_FAILED(audinInitialize())) return -1;
+              u32 sampleRate = VOICE_SAMPLE_RATE;
+              u32 numChannels = 1;
+              u32 format = 0x10000000; // PCM16
+              audinStartRecording(sampleRate, numChannels, format);
+              int totalWritten = 0;
+              while (totalWritten < maxBytes && (padGetButtons(&pad) & HidNpadButton_X)) {
+                  u32 avail = audinGetAvailableSamples();
+                  if (avail > 0) {
+                      u32 bytesToRead = avail * sizeof(u16);
+                      if (totalWritten + bytesToRead > maxBytes) break;
+                      audinRead(buffer + totalWritten, avail);
+                      totalWritten += bytesToRead;
+                  }
+                  svcSleepThread(1000000);
+              }
+              audinStopRecording();
+              audinExit();
+              return totalWritten;
+          }
+
+          char* base64_encode(const u8* data, size_t len) {
+              const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+              size_t output_len = 4 * ((len + 2) / 3);
+              char* output = malloc(output_len + 1);
+              if (!output) return NULL;
+              size_t i = 0, j = 0;
+              while (i < len) {
+                  u32 octet_a = i < len ? data[i++] : 0;
+                  u32 octet_b = i < len ? data[i++] : 0;
+                  u32 octet_c = i < len ? data[i++] : 0;
+                  u32 triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+                  output[j++] = base64_chars[(triple >> 18) & 0x3F];
+                  output[j++] = base64_chars[(triple >> 12) & 0x3F];
+                  output[j++] = base64_chars[(triple >> 6) & 0x3F];
+                  output[j++] = base64_chars[triple & 0x3F];
+              }
+              static const char padding[] = {0,2,1};
+              for (size_t p = 0; p < padding[len % 3]; p++)
+                  output[output_len - 1 - p] = '=';
+              output[output_len] = '\0';
+              return output;
+          }
+
+          size_t write_callback(void* ptr, size_t size, size_t nmemb, void* userdata) {
+              size_t realSize = size * nmemb;
+              char** buf = (char**)userdata;
+              *buf = realloc(*buf, strlen(*buf) + realSize + 1);
+              if (!*buf) return 0;
+              strncat(*buf, ptr, realSize);
+              return realSize;
+          }
+
+          char* callGeminiText(const char* query) {
+              CURL* curl = curl_easy_init();
+              if (!curl) return NULL;
+              char url[512];
+              snprintf(url, sizeof(url), "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", API_KEY);
+              json_t* root = json_object();
+              json_t* contents = json_array();
+              json_t* content = json_object();
+              json_t* parts = json_array();
+              json_t* part = json_object();
+              json_object_set_new(part, "text", json_string(query));
+              json_array_append_new(parts, part);
+              json_object_set_new(content, "parts", parts);
+              json_array_append_new(contents, content);
+              json_object_set_new(root, "contents", contents);
+              char* jsonStr = json_dumps(root, JSON_COMPACT);
+              json_decref(root);
+              struct curl_slist* headers = NULL;
+              headers = curl_slist_append(headers, "Content-Type: application/json");
+              curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+              curl_easy_setopt(curl, CURLOPT_URL, url);
+              curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr);
+              curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(jsonStr));
+              char* response = calloc(1,1);
+              curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+              curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+              CURLcode res = curl_easy_perform(curl);
+              free(jsonStr);
+              if (res != CURLE_OK) { free(response); curl_easy_cleanup(curl); return NULL; }
+              curl_easy_cleanup(curl);
+              json_error_t error;
+              root = json_loads(response, 0, &error);
+              free(response);
+              if (!root) return NULL;
+              const char* text = NULL;
+              json_t* candidates = json_object_get(root, "candidates");
+              if (json_array_size(candidates) > 0) {
+                  json_t* cand = json_array_get(candidates, 0);
+                  json_t* cont = json_object_get(cand, "content");
+                  json_t* prts = json_object_get(cont, "parts");
+                  if (json_array_size(prts) > 0) {
+                      json_t* prt = json_array_get(prts, 0);
+                      text = json_string_value(json_object_get(prt, "text"));
+                  }
+              }
+              char* result = text ? strdup(text) : strdup("I didn't get a response.");
+              json_decref(root);
+              return result;
+          }
+
+          char* callGeminiVoice(u8* audioData, int audioLen) {
+              CURL* curl = curl_easy_init();
+              if (!curl) return NULL;
+              char url[512];
+              snprintf(url, sizeof(url), "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=%s", API_KEY);
+              char* b64 = base64_encode(audioData, audioLen);
+              if (!b64) return NULL;
+              json_t* root = json_object();
+              json_t* contents = json_array();
+              json_t* content = json_object();
+              json_t* parts = json_array();
+              json_t* part = json_object();
+              json_t* inline_data = json_object();
+              json_object_set_new(inline_data, "mime_type", json_string("audio/wav"));
+              json_object_set_new(inline_data, "data", json_string(b64));
+              json_object_set_new(part, "inline_data", inline_data);
+              json_array_append_new(parts, part);
+              json_object_set_new(content, "parts", parts);
+              json_array_append_new(contents, content);
+              json_object_set_new(root, "contents", contents);
+              char* jsonStr = json_dumps(root, JSON_COMPACT);
+              json_decref(root);
+              free(b64);
+              struct curl_slist* headers = NULL;
+              headers = curl_slist_append(headers, "Content-Type: application/json");
+              curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+              curl_easy_setopt(curl, CURLOPT_URL, url);
+              curl_easy_setopt(curl, CURLOPT_POSTFIELDS, jsonStr);
+              curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, strlen(jsonStr));
+              char* response = calloc(1,1);
+              curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+              curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+              CURLcode res = curl_easy_perform(curl);
+              free(jsonStr);
+              if (res != CURLE_OK) { free(response); curl_easy_cleanup(curl); return NULL; }
+              curl_easy_cleanup(curl);
+              json_error_t error;
+              root = json_loads(response, 0, &error);
+              free(response);
+              if (!root) return NULL;
+              const char* text = NULL;
+              json_t* candidates = json_object_get(root, "candidates");
+              if (json_array_size(candidates) > 0) {
+                  json_t* cand = json_array_get(candidates, 0);
+                  json_t* cont = json_object_get(cand, "content");
+                  json_t* prts = json_object_get(cont, "parts");
+                  if (json_array_size(prts) > 0) {
+                      json_t* prt = json_array_get(prts, 0);
+                      text = json_string_value(json_object_get(prt, "text"));
+                  }
+              }
+              char* result = text ? strdup(text) : strdup("Voice not understood.");
+              json_decref(root);
+              return result;
+          }
+
+          char* getKeyboardInput() {
+              SwkbdInline swkbd;
+              R_ABORT_UNLESS(swkbdInlineCreate(&swkbd));
+              SwkbdInlineAppearArg appearArg;
+              swkbdInlineMakeAppearArg(&appearArg, SwkbdType_Normal);
+              swkbdInlineAppearArgSetOkButtonText(&appearArg, "Ask");
+              swkbdInlineLaunchForLibraryApplet(&swkbd, SwkbdInlineMode_UserDisplay, &appearArg);
+              char inputText[512] = "";
+              while (appletMainLoop()) {
+                  SDL_Event e; while (SDL_PollEvent(&e)) {}
+                  padUpdate(&pad);
+                  u64 kDown = padGetButtonsDown(&pad);
+                  if (kDown & HidNpadButton_B) { swkbdInlineClose(&swkbd); return NULL; }
+                  SwkbdInlineState state = swkbdInlineUpdate(&swkbd, NULL);
+                  if (state == SwkbdInlineState_Finished) {
+                      SwkbdInlineResult res = swkbdInlineGetResult(&swkbd, inputText, sizeof(inputText));
+                      swkbdInlineClose(&swkbd);
+                      if (res == SwkbdInlineResult_Ok && strlen(inputText) > 0)
+                          return strdup(inputText);
+                      return NULL;
+                  } else if (state == SwkbdInlineState_Appearing) {
+                      swkbdInlineAppear(&swkbd);
+                  }
+              }
+              swkbdInlineClose(&swkbd);
+              return NULL;
+          }
+
+          int main(int argc, char* argv[]) {
+              padConfigureInput(1, HidNpadStyleSet_NpadStandard);
+              padInitializeDefault(&pad);
+
+              SDL_Init(SDL_INIT_VIDEO);
+              TTF_Init();
+              curl_global_init(CURL_GLOBAL_ALL);
+
+              SDL_Window* window = SDL_CreateWindow("Gemini", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, 0);
+              renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
+
+              font = TTF_OpenFont("romfs:/Roboto-Regular.ttf", 20);
+              fontSmall = TTF_OpenFont("romfs:/Roboto-Regular.ttf", 16);
+              if (!font) { font = TTF_OpenFont("romfs:/Roboto-Regular.ttf",18); fontSmall = TTF_OpenFont("romfs:/Roboto-Regular.ttf",14); }
+
+              memset(chats, 0, sizeof(chats));
+              addMessage("Hello! I'm Gemini AI. Ask me anything or press X to talk.", 0);
+              chatCount = 1;
+              int scrollOffset = 0;
+              bool running = true;
+
+              while (running && appletMainLoop()) {
+                  padUpdate(&pad);
+                  u64 kDown = padGetButtonsDown(&pad);
+                  u64 kHeld = padGetButtons(&pad);
+
+                  // Scroll with D-pad and left stick
+                  int scrollDelta = 0;
+                  if (kDown & HidNpadButton_Down || pad.lk_LY > 20000) scrollDelta = 30;
+                  if (kDown & HidNpadButton_Up || pad.lk_LY < -20000) scrollDelta = -30;
+                  // Fast scroll with right stick
+                  if (pad.rk_LY > 20000) scrollDelta = 60;
+                  if (pad.rk_LY < -20000) scrollDelta = -60;
+                  scrollOffset += scrollDelta;
+                  if (scrollOffset < 0) scrollOffset = 0;
+
+                  if (kDown & HidNpadButton_Plus) running = false;
+                  if (kDown & HidNpadButton_Y) {
+                      currentChatIndex = chatCount % MAX_CHATS;
+                      chatCount = (chatCount + 1) <= MAX_CHATS ? chatCount + 1 : MAX_CHATS;
+                      memset(&chats[currentChatIndex], 0, sizeof(Chat));
+                      addMessage("New conversation started.", 0);
+                      scrollOffset = 0;
+                  }
+                  if (kDown & HidNpadButton_L) {
+                      if (currentChatIndex > 0) currentChatIndex--;
+                      scrollOffset = 0;
+                  }
+                  if (kDown & HidNpadButton_R) {
+                      if (currentChatIndex < chatCount-1) currentChatIndex++;
+                      scrollOffset = 0;
+                  }
+                  if (kDown & HidNpadButton_ZL) {
+                      FILE* f = fopen("/switch/GeminiSwitch/import.txt", "r");
+                      if (f) {
+                          fseek(f, 0, SEEK_END);
+                          long sz = ftell(f);
+                          rewind(f);
+                          char* buf = malloc(sz+1);
+                          fread(buf, 1, sz, f);
+                          buf[sz] = '\0';
+                          addMessage(buf, 1);
+                          free(buf);
+                          fclose(f);
+                      }
+                  }
+                  if (kDown & HidNpadButton_ZR) {
+                      mkdir("/switch/GeminiSwitch", 0777);
+                      FILE* f = fopen("/switch/GeminiSwitch/chat_export.txt", "w");
+                      if (f) {
+                          Chat* chat = &chats[currentChatIndex];
+                          for (int i=0; i<chat->msgCount; i++) {
+                              fprintf(f, "%s: %s\n", chat->messages[i].isUser ? "You" : "Gemini", chat->messages[i].text);
+                          }
+                          fclose(f);
+                      }
+                  }
+                  if (kDown & HidNpadButton_A) {
+                      char* query = getKeyboardInput();
+                      if (query) {
+                          addMessage(query, 1);
+                          scrollOffset = 0;
+                          char* reply = callGeminiText(query);
+                          if (reply) {
+                              addMessage(reply, 0);
+                              free(reply);
+                          }
+                          free(query);
+                      }
+                  }
+
+                  // Voice recording (hold X)
+                  static bool recording = false;
+                  static u8* voiceBuffer = NULL;
+                  static int voiceLen = 0;
+                  if (kHeld & HidNpadButton_X) {
+                      if (!recording) {
+                          recording = true;
+                          voiceLen = 0;
+                          voiceBuffer = malloc(VOICE_SAMPLE_RATE * sizeof(u16) * VOICE_MAX_SECONDS);
+                          audinInitialize();
+                          audinStartRecording(VOICE_SAMPLE_RATE, 1, 0x10000000);
+                      }
+                      if (recording && voiceBuffer && voiceLen < VOICE_SAMPLE_RATE * sizeof(u16) * VOICE_MAX_SECONDS) {
+                          u32 avail = audinGetAvailableSamples();
+                          if (avail > 0) {
+                              audinRead(voiceBuffer + voiceLen, avail);
+                              voiceLen += avail * sizeof(u16);
+                          }
+                      }
+                  } else {
+                      if (recording) {
+                          recording = false;
+                          audinStopRecording();
+                          audinExit();
+                          if (voiceLen > 0) {
+                              char* reply = callGeminiVoice(voiceBuffer, voiceLen);
+                              if (reply) {
+                                  addMessage(reply, 0);
+                                  free(reply);
+                              }
+                              scrollOffset = 0;
+                          }
+                          free(voiceBuffer);
+                          voiceBuffer = NULL;
+                      }
+                  }
+
+                  renderChat(scrollOffset);
+              }
+
+              TTF_CloseFont(font); TTF_CloseFont(fontSmall);
+              SDL_DestroyRenderer(renderer);
+              SDL_DestroyWindow(window);
+              curl_global_cleanup();
+              TTF_Quit(); SDL_Quit();
+              return 0;
+          }
+          EOF
+
+      - name: Generate Makefile
+        run: |
+          cat << 'MAKEEOF' > Makefile
+          ifeq ($(strip $(DEVKITPRO)),)
+          $(error "Please set DEVKITPRO in your environment.")
+          endif
+          include $(DEVKITPRO)/libnx/switch_rules
+
+          APP_TITLE   := Gemini for Switch
+          APP_AUTHOR  := amirxklazer
+          APP_VERSION := 1.0
+
+          TARGET      := GeminiSwitch
+          BUILD       := build
+          SOURCES     := .
+          DATA        := data
+          INCLUDES    := .
+          ROMFS       := romfs
+
+          PORTLIBS    := $(DEVKITPRO)/portlibs/switch
+          SDL2_INC    := $(shell PKG_CONFIG_PATH=$(PORTLIBS)/lib/pkgconfig pkg-config --cflags sdl2 SDL2_ttf libcurl jansson)
+          SDL2_LIBS   := $(shell PKG_CONFIG_PATH=$(PORTLIBS)/lib/pkgconfig pkg-config --static --libs sdl2 SDL2_ttf libcurl jansson)
+
+          export INCLUDE := $(foreach dir,$(INCLUDES),-I$(TOPDIR)/$(dir)) -I$(DEVKITPRO)/libnx/include -I$(DEPSDIR) $(SDL2_INC)
+
+          ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
+          CFLAGS      := -g -Wall -O2 -ffunction-sections -fdata-sections $(ARCH) $(INCLUDE) -D__SWITCH__
+          CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions
+          ASFLAGS     := -g $(ARCH)
+          LDFLAGS     := -specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map) -Wl,-z,notext
+
+          LIBS        := -L$(DEVKITPRO)/libnx/lib -L$(PORTLIBS)/lib -lnx $(SDL2_LIBS) -laudin
+
+          ifneq ($(BUILD),$(notdir $(CURDIR)))
+          export OUTPUT   := $(CURDIR)/$(TARGET)
+          export TOPDIR   := $(CURDIR)
+          export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
+                              $(foreach dir,$(DATA),$(CURDIR)/$(dir))
+          export DEPSDIR  := $(CURDIR)/$(BUILD)
+
+          CFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
+          CPPFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
+          SFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
+
+          export OFILES   := $(CFILES:.c=.o) $(CPPFILES:.cpp=.o) $(SFILES:.s=.o)
+
+          .PHONY: $(BUILD) clean all
+
+          all: $(BUILD)
+
+          $(BUILD):
+          	@[ -d $@ ] || mkdir -p $@
+          	@$(MAKE) --no-print-directory -C $@ -f $(CURDIR)/Makefile
+
+          clean:
+          	@echo clean ...
+          	@rm -fr $(BUILD) $(TARGET).elf $(TARGET).nro $(TARGET).nacp $(TARGET).nsp
+
+          else
+          DEPENDS := $(OFILES:.o=.d)
+          $(OUTPUT).nro: $(OUTPUT).elf
+          $(OUTPUT).elf: $(OFILES)
+          	$(CXX) $(LDFLAGS) $(OFILES) $(LIBS) -o $@
+          -include $(DEPENDS)
+          endif
+          MAKEEOF
+
+      - name: Build NRO
+        run: make -f Makefile
+
+      - name: Create NSP
+        run: |
+          echo '{"name":"Gemini for Switch","author":"amirxklazer","version":"1.0.0","title_id":"0100ABCD12340000","display_version":"1.0.0"}' > control.json
+          npdmtool control.json main.npdm control.nacp
+          nspBuild -t 0100ABCD12340000 -c control.nacp -i icon.jpg -o GeminiSwitch.nsp GeminiSwitch.nro main.npdm
+
+      - name: Upload NSP Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GeminiSwitch-NSP
+          path: ./*.nsp
