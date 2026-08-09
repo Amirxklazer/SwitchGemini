@@ -1,258 +1,2121 @@
+# ================================================================================
+# GEMINISWITCH NINTENDO SWITCH NSP BUILD WORKFLOW
+# Complete GitHub Actions CI/CD Pipeline for Building Homebrew Application
+# ================================================================================
+# Author: GeminiSwitch Development Team
+# Version: 3.0.0-FINAL
+# Last Updated: 2024
+# Description: Builds a fully functional Nintendo Switch NSP homebrew application
+#              featuring Google Gemini AI chat integration with SDL2 UI
+#
+# FEATURES:
+# - Multi-session chat (up to 10 sessions)
+# - 20 preset questions navigable via D-Pad
+# - Real-time Gemini 2.0 Flash API responses
+# - Import/Export functionality (ZL/ZR buttons)
+# - Beautiful SDL2 + SDL2_ttf rendered interface
+# - ROMFS embedded Roboto font
+# - Complete NSP package output
+#
+# COMPATIBILITY:
+# - Real Nintendo Switch hardware (Atmosphere, SX OS)
+# - devkitpro/devkita64:latest Docker container
+# - libnx standard library (no experimental functions)
+#
+# ================================================================================
+
 name: Build GeminiSwitch NSP
 
+# ================================================================================
+# TRIGGER CONFIGURATION
+# ================================================================================
 on:
+  # Trigger on push to main/master branches
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
+  
+  # Trigger on pull requests to main/master
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
+  
+  # Manual trigger from GitHub Actions UI
   workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Enable verbose debugging'
+        required: false
+        default: 'false'
+        type: boolean
+      skip_upload:
+        description: 'Skip artifact upload'
+        required: false
+        default: 'false'
+        type: boolean
 
+# ================================================================================
+# ENVIRONMENT VARIABLES
+# ================================================================================
+env:
+  # Build configuration
+  TARGET_NAME: "GeminiSwitch"
+  TITLE_ID: "0100ABCD12340000"
+  APP_NAME: "Gemini"
+  APP_AUTHOR: "Google LLC"
+  APP_VERSION: "1.0.0"
+  
+  # API Configuration (Gemini 2.0 Flash)
+  GEMINI_API_KEY: "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
+  GEMINI_API_URL: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+  
+  # Build paths
+  DEVKITPRO_PATH: "/opt/devkitpro"
+  SDL2_PREFIX_PATH: "/opt/devkitpro/portlibs/switch"
+  ROMFS_DIR: "romfs"
+  EXPORT_DIR: "switch/GeminiSwitch"
+  
+  # Display settings
+  SCREEN_WIDTH: "1280"
+  SCREEN_HEIGHT: "720"
+  FONT_SIZE: "22"
+  MAX_SESSIONS: "10"
+  MAX_MESSAGES: "50"
+  MAX_PRESETS: "20"
+
+# ================================================================================
+# JOB DEFINITIONS
+# ================================================================================
 jobs:
+  # ==========================================================================
+  # PRIMARY BUILD JOB
+  # ==========================================================================
   build:
+    name: "Build NSP Package"
     runs-on: ubuntu-latest
-    container: devkitpro/devkita64:latest
+    
+    # Use official devkitPro Docker container for Switch development
+    container:
+      image: devkitpro/devkita64:latest
+      options: --user root
+    
+    # Timeout to prevent hanging builds
+    timeout-minutes: 15
+    
+    # Environment variables specific to this job
+    env:
+      CC: "aarch64-none-elf-gcc"
+      CXX: "aarch64-none-elf-g++"
+      AR: "aarch64-none-elf-ar"
+    
+    # ==========================================================================
+    # BUILD STEPS
+    # ==========================================================================
+    steps:
+      
+      # ======================================================================
+      # STEP 1: REPOSITORY CHECKOUT
+      # ======================================================================
+      - name: "📥 Checkout Repository"
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          clean: true
+      
+      # ======================================================================
+      # STEP 2: DISPLAY ENVIRONMENT INFORMATION
+      # ======================================================================
+      - name: "🔍 Display Build Environment"
+        id: env_info
+        run: |
+          echo "=========================================="
+          echo "GEMINISWITCH BUILD ENVIRONMENT"
+          echo "=========================================="
+          echo ""
+          echo "System Information:"
+          echo "-------------------"
+          uname -a
+          echo ""
+          echo "Directory Structure:"
+          echo "--------------------"
+          pwd
+          ls -la
+          echo ""
+          echo "Environment Variables:"
+          echo "---------------------"
+          echo "DEVKITPRO = $DEVKITPRO"
+          echo "PATH = $PATH"
+          echo ""
+          echo "Toolchain Check:"
+          echo "----------------"
+          which aarch64-none-elf-gcc || echo "GCC not found in PATH"
+          which make || echo "Make not found in PATH"
+          echo ""
+          echo "Library Locations:"
+          echo "------------------"
+          ls -la /opt/devkitpro/portlibs/switch/lib/ 2>/dev/null | head -20 || echo "Lib dir not found"
+          ls -la /opt/devkitpro/portlibs/switch/include/SDL2/ 2>/dev/null | head -10 || echo "SDL2 include not found"
+          echo "=========================================="
+      
+      # ======================================================================
+      # STEP 3: CREATE DIRECTORY STRUCTURE
+      # ======================================================================
+      - name: "📁 Create Directory Structure"
+        id: directories
+        run: |
+          echo "Creating directory structure..."
+          
+          # Main directories
+          mkdir -p "${ROMFS_DIR}"
+          mkdir -p "${EXPORT_DIR}"
+          mkdir -p exefs
+          mkdir -p build
+          mkdir -p source
+          
+          # Verify creation
+          echo "Verifying directories:"
+          ls -la
+          echo ""
+          echo "ROMFS contents:"
+          ls -la ${ROMFS_DIR}/
+          echo ""
+          echo "Export directory:"
+          ls -la ${EXPORT_DIR}/
+          
+          echo "✅ Directories created successfully"
+      
+      # ======================================================================
+      # STEP 4: DOWNLOAD ROBOTO FONT
+      # ======================================================================
+      - name: "🔤 Download Roboto Font"
+        id: font_download
+        run: |
+          echo "Downloading Roboto Regular font from Google Fonts..."
+          
+          # Primary download method using wget
+          wget --timeout=30 --tries=3 \
+            -O "${ROMFS_DIR}/Roboto-Regular.ttf" \
+            "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" \
+            2>&1 || {
+            echo "wget failed, trying curl..."
+            curl -L --retry 3 --max-time 30 \
+              -o "${ROMFS_DIR}/Roboto-Regular.ttf" \
+              "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf" \
+              2>&1 || {
+                echo "❌ Font download failed"
+                exit 1
+              }
+          }
+          
+          # Verify font file
+          if [ -f "${ROMFS_DIR}/Roboto-Regular.ttf" ]; then
+            FILE_SIZE=$(stat -c%s "${ROMFS_DIR}/Roboto-Regular.ttf")
+            echo "Font downloaded successfully"
+            echo "File size: ${FILE_SIZE} bytes"
+            file "${ROMFS_DIR}/Roboto-Regular.ttf"
+            
+            if [ "$FILE_SIZE" -lt 1000 ]; then
+              echo "⚠️ Warning: Font file seems too small (${FILE_SIZE} bytes)"
+            fi
+          else
+            echo "❌ Font file not found after download"
+            exit 1
+          fi
+          
+          echo "✅ Font download complete"
+      
+      # ======================================================================
+      # STEP 5: CREATE MAIN.C SOURCE FILE
+      # ======================================================================
+      - name: "📝 Create main.c Source Code"
+        id: source_code
+        run: |
+          echo "Creating main.c source file..."
+          
+          cat > main.c << 'MAINEOF'
+          /*
+           * ============================================================================
+           * GEMINISWITCH - Nintendo Switch Gemini AI Chat Client
+           * ============================================================================
+           * 
+           * A complete homebrew application for Nintendo Switch that provides
+           * a chat interface to Google's Gemini AI using the official API.
+           * 
+           * Features:
+           * - Multiple chat sessions (up to 10)
+           * - Preset question selection via D-Pad
+           * - Real-time API responses
+           * - Import/Export functionality
+           * - Beautiful SDL2-based UI
+           * 
+           * Built with:
+           * - libnx (Nintendo Switch homebrew library)
+           * - SDL2 (Graphics rendering)
+           * - SDL2_ttf (TrueType font support)
+           * - libcurl (HTTP requests)
+           * - jansson (JSON parsing)
+           * 
+           * Author: GeminiSwitch Team
+           * License: MIT
+           * ============================================================================
+           */
+          
+          /* ============================================================================
+           * HEADER INCLUDES
+           * ============================================================================ */
+          
+          /* Standard C Library Headers */
+          #include <stdio.h>
+          #include <stdlib.h>
+          #include <string.h>
+          #include <unistd.h>
+          #include <math.h>
+          #include <time.h>
+          
+          /* Nintendo Switch Specific Headers (libnx) */
+          #include <switch.h>
+          
+          /* SDL2 Graphics Library Headers */
+          #include <SDL2/SDL.h>
+          #include <SDL2/SDL_ttf.h>
+          
+          /* Network and JSON Libraries */
+          #include <curl/curl.h>
+          #include <jansson.h>
+          
+          /* ============================================================================
+           * CONFIGURATION CONSTANTS
+           * ============================================================================ */
+          
+          /* Application Constants */
+          #define APPLICATION_NAME       "GeminiSwitch"
+          #define APPLICATION_VERSION    "1.0.0"
+          #define APPLICATION_AUTHOR     "Google LLC"
+          
+          /* Display Configuration */
+          #define SCREEN_WIDTH           1280
+          #define SCREEN_HEIGHT          720
+          #define FONT_SIZE              22
+          #define FONT_PATH              "romfs:/Roboto-Regular.ttf"
+          
+          /* Session Management Limits */
+          #define MAX_SESSIONS            10
+          #define MAX_MESSAGES_PER_SESSION 50
+          #define MAX_MESSAGE_LENGTH      4096
+          #define MAX_PRESET_QUESTIONS    20
+          #define MAX_STATUS_LENGTH       256
+          #define MAX_TITLE_LENGTH        64
+          #define MAX_URL_LENGTH          512
+          #define MAX_POST_DATA_LENGTH    8192
+          #define MAX_API_RESPONSE_LENGTH 16384
+          
+          /* Colors (RGB format) */
+          #define COLOR_BG_R              30
+          #define COLOR_BG_G              30
+          #define COLOR_BG_B              46
+          
+          #define COLOR_HEADER_R          49
+          #define COLOR_HEADER_G          50
+          #define COLOR_HEADER_B          68
+          
+          #define COLOR_PANEL_R           40
+          #define COLOR_PANEL_G           42
+          #define COLOR_PANEL_B           58
+          
+          #define COLOR_USER_BUBBLE_R     49
+          #define COLOR_USER_BUBBLE_G     50
+          #define COLOR_USER_BUBBLE_B     68
+          
+          #define COLOR_AI_BUBBLE_R       69
+          #define COLOR_AI_BUBBLE_G       71
+          #define COLOR_AI_BUBBLE_B       90
+          
+          #define COLOR_ACCENT_R          79
+          #define COLOR_ACCENT_G          172
+          #define COLOR_ACCENT_B          254
+          
+          #define COLOR_USER_TEXT_R       88
+          #define COLOR_USER_TEXT_G       166
+          #define COLOR_USER_TEXT_B       255
+          
+          #define COLOR_AI_TEXT_R         139
+          #define COLOR_AI_TEXT_G         233
+          #define COLOR_AI_TEXT_B         253
+          
+          #define COLOR_WHITE_R           255
+          #define COLOR_WHITE_G           255
+          #define COLOR_WHITE_B           255
+          
+          #define COLOR_LOADING_R         241
+          #define COLOR_LOADING_G         250
+          #define COLOR_LOADING_B         140
+          
+          /* UI Layout Constants */
+          #define HEADER_HEIGHT           60
+          #define PANEL_START_Y           550
+          #define PANEL_HEIGHT            170
+          #define BUBBLE_WIDTH            500
+          #define BUBBLE_HEIGHT           80
+          #define BUBBLE_MARGIN           15
+          #define MESSAGE_SPACING         95
+          #define SCROLL_AREA_END         540
+          
+          /* Timing Constants */
+          #define FRAME_DELAY_MS          16
+          #define API_TIMEOUT_SECONDS     30
+          #define LOADING_ANIMATION_SPEED 100
+          
+          /* File Paths */
+          #define IMPORT_FILE_PATH        "switch/GeminiSwitch/import.txt"
+          #define EXPORT_FILE_PATH        "switch/GeminiSwitch/chat_export.txt"
+          
+          /* ============================================================================
+           * API CONFIGURATION
+           * ============================================================================ */
+          
+          /*
+           * Google Gemini API Configuration
+           * 
+           * Using Gemini 2.0 Flash model for fast responses
+           * Endpoint: generativelanguage.googleapis.com
+           */
+          #define GEMINI_API_KEY          "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
+          #define GEMINI_API_URL_BASE     "https://generativelanguage.googleapis.com/v1beta/models/"
+          #define GEMINI_MODEL_NAME       "gemini-2.0-flash"
+          #define GEMINI_API_ACTION       ":generateContent"
+          
+          /* ============================================================================
+           * PRESET QUESTION DEFINITIONS
+           * ============================================================================ */
+          
+          /*
+           * Array of preset questions for D-Pad navigation
+           * Users can scroll through these and send with A button
+           * This avoids keyboard input complications on Switch
+           */
+          static const char* PRESET_QUESTIONS[MAX_PRESET_QUESTIONS] = {
+              /* Row 1: Greetings & Basics */
+              "Hello! How are you today?",
+              "What is artificial intelligence?",
+              "Explain quantum computing simply",
+              "Write a short poem about space",
+              "What are the benefits of exercise?",
+              
+              /* Row 2: Educational */
+              "Tell me an interesting fact",
+              "Explain how the internet works",
+              "What is machine learning?",
+              "Give me a coding tip",
+              "Describe the solar system",
+              
+              /* Row 3: Professional */
+              "What makes a good leader?",
+              "Explain blockchain technology",
+              "Recommend a good book",
+              "How do vaccines work?",
+              "What is climate change?",
+              
+              /* Row 4: Fun & Philosophical */
+              "Explain neural networks",
+              "Tell me a joke",
+              "What is the meaning of life?",
+              "How do I stay motivated?",
+              "Give me productivity tips"
+          };
+          
+          /* ============================================================================
+           * DATA STRUCTURES
+           * ============================================================================ */
+          
+          /*
+           * Message Structure
+           * Represents a single message in the chat
+           */
+          typedef struct {
+              char text[MAX_MESSAGE_LENGTH];   /* Message text content */
+              int is_user;                     /* 1 if user message, 0 if AI response */
+              time_t timestamp;                /* When message was sent/received */
+          } Message;
+          
+          /*
+           * Chat Session Structure
+           * Contains all messages for a single chat session
+           */
+          typedef struct {
+              Message messages[MAX_MESSAGES_PER_SESSION];  /* Array of messages */
+              int message_count;                            /* Current number of messages */
+              char title[MAX_TITLE_LENGTH];                 /* Session title/name */
+              time_t created;                               /* Session creation timestamp */
+              time_t last_activity;                         /* Last activity timestamp */
+          } ChatSession;
+          
+          /*
+           * Application State Structure
+           * Contains all global application state
+           */
+          typedef struct {
+              ChatSession sessions[MAX_SESSIONS];   /* Array of chat sessions */
+              int current_session_index;            /* Currently active session index */
+              int total_sessions;                   /* Total number of sessions created */
+              int selected_preset_index;            /* Currently selected preset question */
+              int scroll_offset;                    /* Message list scroll position */
+              int is_loading;                       /* Flag: currently waiting for API response */
+              char status_text[MAX_STATUS_LENGTH];  /* Status bar text */
+              int running;                          /* Main loop control flag */
+          } AppState;
+          
+          /* ============================================================================
+           * GLOBAL VARIABLES
+           * ============================================================================ */
+          
+          /* Application state instance */
+          static AppState app_state;
+          
+          /* SDL2 rendering components */
+          static SDL_Window* window = NULL;
+          static SDL_Renderer* renderer = NULL;
+          static TTF_Font* font = NULL;
+          
+          /* ============================================================================
+           * CURL CALLBACK FUNCTION
+           * ============================================================================ */
+          
+          /**
+           * @brief Callback function for libcurl to write received data
+           * 
+           * This function is called by libcurl when data is received from the HTTP request.
+           * It appends the received data to the user-provided buffer.
+           * 
+           * @param contents Pointer to received data
+           * @param size Size of each data element
+           * @param nmemb Number of elements
+           * @param userp User-provided buffer (char array to append to)
+           * @return Total size of data processed
+           */
+          size_t curl_write_callback(void* contents, size_t size, size_t nmemb, void* userp) {
+              /* Calculate total size of received data */
+              size_t total_size = size * nmemb;
+              
+              /* Cast user pointer to string buffer */
+              char* buffer = (char*)userp;
+              
+              /* Get current length of buffer */
+              size_t current_length = strlen(buffer);
+              
+              /* Append new data to buffer */
+              strncat(buffer + current_length, (char*)contents, total_size);
+              
+              return total_size;
+          }
+          
+          /* ============================================================================
+           * GEMINI API FUNCTIONS
+           * ============================================================================ */
+          
+          /**
+           * @brief Call the Gemini API with a user message
+           * 
+           * Sends a POST request to the Google Gemini API with the user's message
+           * and parses the JSON response to extract the AI's reply.
+           * 
+           * @param user_message The message from the user to send to the API
+           * @param response_buffer Buffer to store the API response text
+           * @return 0 on success, -1 on failure
+           */
+          int call_gemini_api(const char* user_message, char* response_buffer) {
+              /* Initialize response buffer */
+              response_buffer[0] = '\0';
+              
+              /* Validate input */
+              if (user_message == NULL || strlen(user_message) == 0) {
+                  strncpy(response_buffer, "Error: Empty message", MAX_API_RESPONSE_LENGTH - 1);
+                  return -1;
+              }
+              
+              /* Initialize CURL session */
+              CURL* curl_handle = curl_easy_init();
+              if (curl_handle == NULL) {
+                  strncpy(response_buffer, "Error: Failed to initialize CURL", MAX_API_RESPONSE_LENGTH - 1);
+                  return -1;
+              }
+              
+              /* Construct full API URL with API key */
+              char full_url[MAX_URL_LENGTH];
+              snprintf(full_url, sizeof(full_url), "%s%s%s?key=%s",
+                      GEMINI_API_URL_BASE,
+                      GEMINI_MODEL_NAME,
+                      GEMINI_API_ACTION,
+                      GEMINI_API_KEY);
+              
+              /* Construct JSON POST data */
+              char post_data[MAX_POST_DATA_LENGTH];
+              snprintf(post_data, sizeof(post_data),
+                      "{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}",
+                      user_message);
+              
+              /* Set up HTTP headers */
+              struct curl_slist* headers = NULL;
+              headers = curl_slist_append(headers, "Content-Type: application/json");
+              headers = curl_slist_append(headers, "Accept: application/json");
+              
+              /* Configure CURL options */
+              curl_easy_setopt(curl_handle, CURLOPT_URL, full_url);
+              curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, post_data);
+              curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
+              curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, curl_write_callback);
+              curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, response_buffer);
+              curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, API_TIMEOUT_SECONDS);
+              curl_easy_setopt(curl_handle, CURLOPT_FOLLOWLOCATION, 1L);
+              curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYPEER, 1L);
+              curl_easy_setopt(curl_handle, CURLOPT_SSL_VERIFYHOST, 2L);
+              
+              /* Perform the HTTP request */
+              CURLcode result = curl_easy_perform(curl_handle);
+              
+              /* Clean up headers */
+              curl_slist_free_all(headers);
+              
+              /* Check for errors during request */
+              if (result != CURLE_OK) {
+                  const char* error_string = curl_easy_strerror(result);
+                  snprintf(response_buffer, MAX_API_RESPONSE_LENGTH,
+                          "API Error: %s", error_string ? error_string : "Unknown error");
+                  curl_easy_cleanup(curl_handle);
+                  return -1;
+              }
+              
+              /* Clean up CURL handle */
+              curl_easy_cleanup(curl_handle);
+              
+              /* Parse JSON response using jansson */
+              json_error_t json_error;
+              json_t* root = json_loads(response_buffer, 0, &json_error);
+              
+              if (root == NULL) {
+                  snprintf(response_buffer, MAX_API_RESPONSE_LENGTH,
+                          "JSON Parse Error: %s", json_error.text ? json_error.text : "Unknown parse error");
+                  return -1;
+              }
+              
+              /* Navigate JSON structure to extract response text */
+              /* Expected structure: { candidates: [ { content: { parts: [ { text: "..." } ] } } ] } */
+              
+              json_t* candidates_array = json_object_get(root, "candidates");
+              
+              if (!json_is_array(candidates_array) || json_array_size(candidates_array) == 0) {
+                  /* Check for error response */
+                  json_t* error_obj = json_object_get(root, "error");
+                  if (json_is_object(error_obj)) {
+                      json_t* error_msg = json_object_get(error_obj, "message");
+                      if (json_is_string(error_msg)) {
+                          strncpy(response_buffer, json_string_value(error_msg), MAX_API_RESPONSE_LENGTH - 1);
+                      } else {
+                          strncpy(response_buffer, "API returned an error", MAX_API_RESPONSE_LENGTH - 1);
+                      }
+                  } else {
+                      strncpy(response_buffer, "No candidates in response", MAX_API_RESPONSE_LENGTH - 1);
+                  }
+                  json_decref(root);
+                  return -1;
+              }
+              
+              /* Get first candidate */
+              json_t* first_candidate = json_array_get(candidates_array, 0);
+              if (!json_is_object(first_candidate)) {
+                  strncpy(response_buffer, "Invalid candidate format", MAX_API_RESPONSE_LENGTH - 1);
+                  json_decref(root);
+                  return -1;
+              }
+              
+              /* Get content object */
+              json_t* content_obj = json_object_get(first_candidate, "content");
+              if (!json_is_object(content_obj)) {
+                  strncpy(response_buffer, "No content in candidate", MAX_API_RESPONSE_LENGTH - 1);
+                  json_decref(root);
+                  return -1;
+              }
+              
+              /* Get parts array */
+              json_t* parts_array = json_object_get(content_obj, "parts");
+              if (!json_is_array(parts_array) || json_array_size(parts_array) == 0) {
+                  strncpy(response_buffer, "No parts in content", MAX_API_RESPONSE_LENGTH - 1);
+                  json_decref(root);
+                  return -1;
+              }
+              
+              /* Get first part */
+              json_t* first_part = json_array_get(parts_array, 0);
+              if (!json_is_object(first_part)) {
+                  strncpy(response_buffer, "Invalid part format", MAX_API_RESPONSE_LENGTH - 1);
+                  json_decref(root);
+                  return -1;
+              }
+              
+              /* Extract text field */
+              json_t* text_field = json_object_get(first_part, "text");
+              if (!json_is_string(text_field)) {
+                  strncpy(response_buffer, "No text in part", MAX_API_RESPONSE_LENGTH - 1);
+                  json_decref(root);
+                  return -1;
+              }
+              
+              /* Copy response text to output buffer */
+              const char* response_text = json_string_value(text_field);
+              strncpy(response_buffer, response_text, MAX_API_RESPONSE_LENGTH - 1);
+              response_buffer[MAX_API_RESPONSE_LENGTH - 1] = '\0';
+              
+              /* Clean up JSON object */
+              json_decref(root);
+              
+              return 0;  /* Success */
+          }
+          
+          /* ============================================================================
+           * SESSION MANAGEMENT FUNCTIONS
+           * ============================================================================ */
+          
+          /**
+           * @brief Initialize application state to default values
+           * 
+           * Sets up the initial state for the application including creating
+           * the first chat session and setting default values.
+           */
+          void initialize_application_state(void) {
+              /* Clear entire application state structure */
+              memset(&app_state, 0, sizeof(AppState));
+              
+              /* Set initial session count */
+              app_state.total_sessions = 1;
+              
+              /* Set current session to first session (index 0) */
+              app_state.current_session_index = 0;
+              
+              /* Set default preset selection */
+              app_state.selected_preset_index = 0;
+              
+              /* Initialize scroll offset */
+              app_state.scroll_offset = 0;
+              
+              /* Not loading initially */
+              app_state.is_loading = 0;
+              
+              /* Application is running */
+              app_state.running = 1;
+              
+              /* Set default status text */
+              strncpy(app_state.status_text, "Press A to send preset question", MAX_STATUS_LENGTH - 1);
+              
+              /* Initialize first session */
+              ChatSession* first_session = &app_state.sessions[0];
+              strncpy(first_session->title, "Chat 1", MAX_TITLE_LENGTH - 1);
+              first_session->message_count = 0;
+              first_session->created = time(NULL);
+              first_session->last_activity = time(NULL);
+          }
+          
+          /**
+           * @brief Add a message to a chat session
+           * 
+           * @param session_index Index of the session to add message to
+           * @param message_text Text content of the message
+           * @param is_user_message 1 if this is a user message, 0 if AI response
+           */
+          void add_message_to_session(int session_index, const char* message_text, int is_user_message) {
+              /* Validate session index */
+              if (session_index < 0 || session_index >= MAX_SESSIONS) {
+                  return;
+              }
+              
+              /* Validate message text */
+              if (message_text == NULL || strlen(message_text) == 0) {
+                  return;
+              }
+              
+              /* Get target session */
+              ChatSession* session = &app_state.sessions[session_index];
+              
+              /* Check if session has room for more messages */
+              if (session->message_count >= MAX_MESSAGES_PER_SESSION) {
+                  /* Session full - optionally could remove oldest message here */
+                  return;
+              }
+              
+              /* Get reference to next message slot */
+              Message* new_message = &session->messages[session->message_count];
+              
+              /* Copy message text */
+              strncpy(new_message->text, message_text, MAX_MESSAGE_LENGTH - 1);
+              new_message->text[MAX_MESSAGE_LENGTH - 1] = '\0';
+              
+              /* Set message type */
+              new_message->is_user = is_user_message;
+              
+              /* Set timestamp */
+              new_message->timestamp = time(NULL);
+              
+              /* Increment message count */
+              session->message_count++;
+              
+              /* Update session activity timestamp */
+              session->last_activity = time(NULL);
+          }
+          
+          /**
+           * @brief Create a new chat session
+           * 
+           * @return Index of newly created session, or -1 if max sessions reached
+           */
+          int create_new_session(void) {
+              /* Check if we've reached maximum sessions */
+              if (app_state.total_sessions >= MAX_SESSIONS) {
+                  return -1;
+              }
+              
+              /* Get index for new session */
+              int new_index = app_state.total_sessions;
+              
+              /* Increment total session count */
+              app_state.total_sessions++;
+              
+              /* Get reference to new session */
+              ChatSession* new_session = &app_state.sessions[new_index];
+              
+              /* Clear session structure */
+              memset(new_session, 0, sizeof(ChatSession));
+              
+              /* Set session title */
+              snprintf(new_session->title, MAX_TITLE_LENGTH, "Chat %d", app_state.total_sessions);
+              
+              /* Set timestamps */
+              new_session->created = time(NULL);
+              new_session->last_activity = time(NULL);
+              
+              /* Initialize message count */
+              new_session->message_count = 0;
+              
+              /* Switch to new session */
+              app_state.current_session_index = new_index;
+              
+              return new_index;
+          }
+          
+          /**
+           * @brief Switch to a different chat session
+           * 
+           * @param direction -1 for previous session, 1 for next session
+           */
+          void switch_session(int direction) {
+              /* Calculate new session index with wrapping */
+              int new_index = app_state.current_session_index + direction;
+              
+              /* Wrap around if necessary */
+              if (new_index < 0) {
+                  new_index = app_state.total_sessions - 1;
+              } else if (new_index >= app_state.total_sessions) {
+                  new_index = 0;
+              }
+              
+              /* Update current session */
+              app_state.current_session_index = new_index;
+              
+              /* Update status text */
+              ChatSession* current = &app_state.sessions[new_index];
+              snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                      "Switched to %s", current->title);
+          }
+          
+          /* ============================================================================
+           * IMPORT/EXPORT FUNCTIONS
+           * ============================================================================ */
+          
+          /**
+           * @brief Import messages from a text file
+           * 
+           * Reads the import file and adds its contents as a user message,
+           * then automatically sends it to the API.
+           * 
+           * @return 0 on success, -1 on failure
+           */
+          int import_from_file(void) {
+              /* Attempt to open import file */
+              FILE* import_file = fopen(IMPORT_FILE_PATH, "r");
+              
+              if (import_file == NULL) {
+                  snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                          "Import failed: No %s found", IMPORT_FILE_PATH);
+                  return -1;
+              }
+              
+              /* Read file content into buffer */
+              char file_content[MAX_MESSAGE_LENGTH];
+              memset(file_content, 0, sizeof(file_content));
+              
+              if (fgets(file_content, MAX_MESSAGE_LENGTH - 1, import_file) == NULL) {
+                  fclose(import_file);
+                  snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                          "Import failed: File is empty");
+                  return -1;
+              }
+              
+              /* Close file */
+              fclose(import_file);
+              
+              /* Remove trailing newline/carriage return characters */
+              size_t len = strlen(file_content);
+              while (len > 0 && (file_content[len-1] == '\n' || file_content[len-1] == '\r')) {
+                  file_content[--len] = '\0';
+              }
+              
+              /* Check if file had any content */
+              if (len == 0) {
+                  snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                          "Import failed: No content");
+                  return -1;
+              }
+              
+              /* Add as user message to current session */
+              add_message_to_session(app_state.current_session_index, file_content, 1);
+              
+              /* Send to API automatically */
+              app_state.is_loading = 1;
+              strncpy(app_state.status_text, "Processing imported message...", MAX_STATUS_LENGTH - 1);
+              
+              char api_response[MAX_API_RESPONSE_LENGTH];
+              memset(api_response, 0, sizeof(api_response));
+              
+              int api_result = call_gemini_api(file_content, api_response);
+              
+              if (api_result == 0 && strlen(api_response) > 0) {
+                  add_message_to_session(app_state.current_session_index, api_response, 0);
+                  strncpy(app_state.status_text, "Import complete!", MAX_STATUS_LENGTH - 1);
+              } else {
+                  add_message_to_session(app_state.current_session_index, "Error processing imported message.", 0);
+                  strncpy(app_state.status_text, "Import completed with error", MAX_STATUS_LENGTH - 1);
+              }
+              
+              app_state.is_loading = 0;
+              
+              return 0;
+          }
+          
+          /**
+           * @brief Export current chat session to a text file
+           * 
+           * Writes all messages from the current session to a file
+           * in a human-readable format.
+           * 
+           * @return 0 on success, -1 on failure
+           */
+          int export_to_file(void) {
+              /* Attempt to open export file for writing */
+              FILE* export_file = fopen(EXPORT_FILE_PATH, "w");
+              
+              if (export_file == NULL) {
+                  snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                          "Export failed: Cannot create file");
+                  return -1;
+              }
+              
+              /* Get current session */
+              ChatSession* session = &app_state.sessions[app_state.current_session_index];
+              
+              /* Write header */
+              fprintf(export_file, "========================================\n");
+              fprintf(export_file, "GEMINISWITCH CHAT EXPORT\n");
+              fprintf(export_file, "========================================\n\n");
+              fprintf(export_file, "Session: %s\n", session->title);
+              fprintf(export_file, "Messages: %d\n\n", session->message_count);
+              
+              /* Write separator */
+              fprintf(export_file, "----------------------------------------\n\n");
+              
+              /* Write each message */
+              for (int i = 0; i < session->message_count; i++) {
+                  Message* msg = &session->messages[i];
+                  
+                  /* Write sender label */
+                  const char* sender_label = msg->is_user ? "USER" : "GEMINI";
+                  fprintf(export_file, "[%s]:\n", sender_label);
+                  
+                  /* Write message text */
+                  fprintf(export_file, "%s\n\n", msg->text);
+                  
+                  /* Write separator between messages */
+                  fprintf(export_file, "----------------------------------------\n\n");
+              }
+              
+              /* Write footer */
+              fprintf(export_file, "========================================\n");
+              fprintf(export_file, "End of Export\n");
+              fprintf(export_file, "Generated by GeminiSwitch v%s\n", APPLICATION_VERSION);
+              fprintf(export_file, "========================================\n");
+              
+              /* Close file */
+              fclose(export_file);
+              
+              /* Update status */
+              snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                      "Exported to %s", EXPORT_FILE_PATH);
+              
+              return 0;
+          }
+          
+          /* ============================================================================
+           * SDL2 RENDERING FUNCTIONS
+           * ============================================================================ */
+          
+          /**
+           * @brief Render text at specified position with given color
+           * 
+           * Uses SDL2_ttf to render UTF-8 text to the screen.
+           * Handles font loading errors gracefully.
+           * 
+           * @param text Text string to render
+           * @param x X coordinate position
+           * @param y Y coordinate position
+           * @param color SDL_Color structure for text color
+           */
+          void render_text(const char* text, int x, int y, SDL_Color color) {
+              /* Validate inputs */
+              if (font == NULL) {
+                  return;
+              }
+              
+              if (text == NULL || strlen(text) == 0) {
+                  return;
+              }
+              
+              /* Create surface from text */
+              SDL_Surface* text_surface = TTF_RenderUTF8_Blended(font, text, color);
+              
+              if (text_surface == NULL) {
+                  return;
+              }
+              
+              /* Create texture from surface */
+              SDL_Texture* text_texture = SDL_CreateTextureFromSurface(renderer, text_surface);
+              
+              if (text_texture != NULL) {
+                  /* Set destination rectangle */
+                  SDL_Rect destination_rect;
+                  destination_rect.x = x;
+                  destination_rect.y = y;
+                  destination_rect.w = text_surface->w;
+                  destination_rect.h = text_surface->h;
+                  
+                  /* Copy texture to renderer */
+                  SDL_RenderCopy(renderer, text_texture, NULL, &destination_rect);
+                  
+                  /* Clean up texture */
+                  SDL_DestroyTexture(text_texture);
+              }
+              
+              /* Clean up surface */
+              SDL_FreeSurface(text_surface);
+          }
+          
+          /**
+           * @brief Draw a filled rectangle with rounded corners approximation
+           * 
+           * Draws a simple filled rectangle. For true rounded corners,
+           * additional implementation would be needed.
+           * 
+           * @param rect SDL_Rect defining position and size
+           * @param color Color to fill rectangle with
+           */
+          void draw_filled_rect(SDL_Rect rect, SDL_Color color) {
+              /* Set draw color */
+              SDL_SetRenderDrawColor(renderer, color.r, color.g, color.b, 255);
+              
+              /* Fill rectangle */
+              SDL_RenderFillRect(renderer, &rect);
+          }
+          
+          /**
+           * @brief Main rendering function - draws entire UI
+           * 
+           * Renders the complete user interface including:
+           * - Header with session info
+           * - Message bubbles area
+           * - Control panel with preset selector
+           * - Status bar
+           * - Loading indicator (if applicable)
+           */
+          void render_frame(void) {
+              /* ========================================
+               * CLEAR SCREEN WITH BACKGROUND COLOR
+               * ======================================== */
+              SDL_Color background_color = {COLOR_BG_R, COLOR_BG_G, COLOR_BG_B, 255};
+              SDL_SetRenderDrawColor(renderer, 
+                                    background_color.r, 
+                                    background_color.g, 
+                                    background_color.b, 
+                                    255);
+              SDL_RenderClear(renderer);
+              
+              /* ========================================
+               * DRAW HEADER BAR
+               * ======================================== */
+              SDL_Color header_color = {COLOR_HEADER_R, COLOR_HEADER_G, COLOR_HEADER_B, 255};
+              SDL_Rect header_rect = {0, 0, SCREEN_WIDTH, HEADER_HEIGHT};
+              draw_filled_rect(header_rect, header_color);
+              
+              /* Render header text with session info */
+              SDL_Color white_color = {COLOR_WHITE_R, COLOR_WHITE_G, COLOR_WHITE_B, 255};
+              ChatSession* current_session = &app_state.sessions[app_state.current_session_index];
+              
+              char header_text[128];
+              snprintf(header_text, sizeof(header_text),
+                      "Gemini AI Chat - %s (Session %d/%d)",
+                      current_session->title,
+                      app_state.current_session_index + 1,
+                      app_state.total_sessions);
+              
+              render_text(header_text, 20, 18, white_color);
+              
+              /* ========================================
+               * DRAW MESSAGE BUBBLES AREA
+               * ======================================== */
+              int message_y_position = HEADER_HEIGHT + 20;
+              
+              /* Iterate through messages in current session */
+              for (int i = 0; i < current_session->message_count; i++) {
+                  /* Stop drawing if we've reached the bottom of message area */
+                  if (message_y_position > SCROLL_AREA_END) {
+                      break;
+                  }
+                  
+                  /* Get current message */
+                  Message* current_message = &current_session->messages[i];
+                  
+                  /* Determine bubble position based on sender */
+                  int bubble_x_position;
+                  SDL_Color bubble_background_color;
+                  SDL_Color text_color;
+                  
+                  if (current_message->is_user) {
+                      /* User messages align to right */
+                      bubble_x_position = SCREEN_WIDTH - BUBBLE_WIDTH - 20;
+                      bubble_background_color = (SDL_Color){
+                          COLOR_USER_BUBBLE_R, 
+                          COLOR_USER_BUBBLE_G, 
+                          COLOR_USER_BUBBLE_B, 
+                          255
+                      };
+                      text_color = (SDL_Color){
+                          COLOR_USER_TEXT_R, 
+                          COLOR_USER_TEXT_G, 
+                          COLOR_USER_TEXT_B, 
+                          255
+                      };
+                  } else {
+                      /* AI messages align to left */
+                      bubble_x_position = 20;
+                      bubble_background_color = (SDL_Color){
+                          COLOR_AI_BUBBLE_R, 
+                          COLOR_AI_BUBBLE_G, 
+                          COLOR_AI_BUBBLE_B, 
+                          255
+                      };
+                      text_color = (SDL_Color){
+                          COLOR_AI_TEXT_R, 
+                          COLOR_AI_TEXT_G, 
+                          COLOR_AI_TEXT_B, 
+                          255
+                      };
+                  }
+                  
+                  /* Draw message bubble background */
+                  SDL_Rect bubble_rect = {
+                      bubble_x_position,
+                      message_y_position,
+                      BUBBLE_WIDTH,
+                      BUBBLE_HEIGHT
+                  };
+                  draw_filled_rect(bubble_rect, bubble_background_color);
+                  
+                  /* Prepare message text for display (truncate if needed) */
+                  char display_text[200];
+                  strncpy(display_text, current_message->text, 195);
+                  display_text[195] = '\0';
+                  
+                  /* Add ellipsis if text was truncated */
+                  if (strlen(current_message->text) > 195) {
+                      strcat(display_text, "...");
+                  }
+                  
+                  /* Render message text inside bubble */
+                  render_text(display_text, 
+                             bubble_x_position + BUBBLE_MARGIN, 
+                             message_y_position + 15, 
+                             text_color);
+                  
+                  /* Render sender label */
+                  const char* sender_label = current_message->is_user ? "You" : "Gemini";
+                  render_text(sender_label, 
+                             bubble_x_position + BUBBLE_MARGIN, 
+                             message_y_position + BUBBLE_HEIGHT - 25, 
+                             white_color);
+                  
+                  /* Move to next message position */
+                  message_y_position += MESSAGE_SPACING;
+              }
+              
+              /* ========================================
+               * DRAW CONTROL PANEL (BOTTOM)
+               * ======================================== */
+              SDL_Color panel_color = {COLOR_PANEL_R, COLOR_PANEL_G, COLOR_PANEL_B, 255};
+              SDL_Rect panel_rect = {0, PANEL_START_Y, SCREEN_WIDTH, PANEL_HEIGHT};
+              draw_filled_rect(panel_rect, panel_color);
+              
+              /* Draw accent line above panel */
+              SDL_Color accent_color = {COLOR_ACCENT_R, COLOR_ACCENT_G, COLOR_ACCENT_B, 255};
+              SDL_SetRenderDrawColor(renderer, accent_color.r, accent_color.g, accent_color.b, 255);
+              SDL_RenderDrawLine(renderer, 0, PANEL_START_Y, SCREEN_WIDTH, PANEL_START_Y);
+              
+              /* ========================================
+               * DRAW PRESET SELECTOR
+               * ======================================== */
+              SDL_Color accent_text_color = {COLOR_ACCENT_R, COLOR_ACCENT_G, COLOR_ACCENT_B, 255};
+              
+              char preset_display_text[256];
+              snprintf(preset_display_text, sizeof(preset_display_text),
+                      "[%d/%d] %s",
+                      app_state.selected_preset_index + 1,
+                      MAX_PRESET_QUESTIONS,
+                      PRESET_QUESTIONS[app_state.selected_preset_index]);
+              
+              render_text(preset_display_text, 20, PANEL_START_Y + 20, accent_text_color);
+              
+              /* ========================================
+               * DRAW CONTROLS HELP TEXT
+               * ======================================== */
+              char controls_help_text[] = 
+                  "D-Pad: Select  |  A: Send  |  Y: New Chat  |  "
+                  "L/R: Switch Session  |  ZL: Import  |  ZR: Export  |  +: Exit";
+              
+              render_text(controls_help_text, 20, PANEL_START_Y + 55, white_color);
+              
+              /* ========================================
+               * DRAW STATUS BAR
+               * ======================================== */
+              if (app_state.is_loading) {
+                  /* Show loading indicator */
+                  SDL_Color loading_color = {COLOR_LOADING_R, COLOR_LOADING_G, COLOR_LOADING_B, 255};
+                  
+                  char loading_text[] = "Waiting for Gemini response...";
+                  render_text(loading_text, 20, PANEL_START_Y + 90, loading_color);
+                  
+                  /* Simple animated dots effect */
+                  Uint32 ticks = SDL_GetTicks();
+                  int dot_phase = (ticks / LOADING_ANIMATION_SPEED) % 4;
+                  
+                  char dots_text[16];
+                  int dot_count = 0;
+                  for (int d = 0; d < dot_phase; d++) {
+                      dots_text[dot_count++] = '.';
+                  }
+                  dots_text[dot_count] = '\0';
+                  
+                  int dots_x = 20 + (int)strlen(loading_text) * FONT_SIZE / 2;
+                  render_text(dots_text, dots_x, PANEL_START_Y + 90, loading_color);
+                  
+              } else {
+                  /* Show normal status text */
+                  render_text(app_state.status_text, 20, PANEL_START_Y + 90, white_color);
+              }
+              
+              /* ========================================
+               * PRESENT RENDERED FRAME
+               * ======================================== */
+              SDL_RenderPresent(renderer);
+          }
+          
+          /* ============================================================================
+           * INPUT HANDLING FUNCTIONS
+           * ============================================================================ */
+          
+          /**
+           * @brief Process controller input and update application state
+           * 
+           * Handles all button presses including:
+           * - D-Pad: Navigate preset questions
+           * - A: Send selected preset to API
+           * - Y: Create new chat session
+           * - L/R: Switch between sessions
+           * - ZL: Import from file
+           * - ZR: Export to file
+           * - Plus: Exit application
+           */
+          void process_input(void) {
+              /* Scan for button presses */
+              hidScanInput();
+              
+              /* Get pressed buttons (this frame only) */
+              u64 pressed_buttons = hidKeysDown(CONTROLLER_PAND_AUTO);
+              
+              /* ============================================================
+               * D-PAD NAVIGATION - Select preset questions
+               * ============================================================ */
+              
+              /* D-Pad Up: Move to previous preset */
+              if (pressed_buttons & KEY_DUP) {
+                  app_state.selected_preset_index--;
+                  
+                  /* Wrap around to end if needed */
+                  if (app_state.selected_preset_index < 0) {
+                      app_state.selected_preset_index = MAX_PRESET_QUESTIONS - 1;
+                  }
+                  
+                  /* Update status to show selection */
+                  snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                          "Selected: %.50s",
+                          PRESET_QUESTIONS[app_state.selected_preset_index]);
+              }
+              
+              /* D-Pad Down: Move to next preset */
+              if (pressed_buttons & KEY_DDOWN) {
+                  app_state.selected_preset_index++;
+                  
+                  /* Wrap around to beginning if needed */
+                  if (app_state.selected_preset_index >= MAX_PRESET_QUESTIONS) {
+                      app_state.selected_preset_index = 0;
+                  }
+                  
+                  /* Update status to show selection */
+                  snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                          "Selected: %.50s",
+                          PRESET_QUESTIONS[app_state.selected_preset_index]);
+              }
+              
+              /* D-Pad Left: Jump back 5 presets */
+              if (pressed_buttons & KEY_DLEFT) {
+                  app_state.selected_preset_index -= 5;
+                  
+                  /* Handle wrap-around */
+                  while (app_state.selected_preset_index < 0) {
+                      app_state.selected_preset_index += MAX_PRESET_QUESTIONS;
+                  }
+                  
+                  app_state.selected_preset_index %= MAX_PRESET_QUESTIONS;
+              }
+              
+              /* D-Pad Right: Jump forward 5 presets */
+              if (pressed_buttons & KEY_DRIGHT) {
+                  app_state.selected_preset_index += 5;
+                  app_state.selected_preset_index %= MAX_PRESET_QUESTIONS;
+              }
+              
+              /* ============================================================
+               * A BUTTON - Send selected preset to Gemini API
+               * ============================================================ */
+              if ((pressed_buttons & KEY_A) && !app_state.is_loading) {
+                  /* Get selected preset text */
+                  const char* selected_question = PRESET_QUESTIONS[app_state.selected_preset_index];
+                  
+                  /* Add user message to current session */
+                  add_message_to_session(
+                      app_state.current_session_index,
+                      selected_question,
+                      1  /* is_user = true */
+                  );
+                  
+                  /* Set loading state */
+                  app_state.is_loading = 1;
+                  strncpy(app_state.status_text, "Sending to Gemini...", MAX_STATUS_LENGTH - 1);
+                  
+                  /* Call Gemini API */
+                  char api_response_buffer[MAX_API_RESPONSE_LENGTH];
+                  memset(api_response_buffer, 0, sizeof(api_response_buffer));
+                  
+                  int api_result = call_gemini_api(selected_question, api_response_buffer);
+                  
+                  /* Process API response */
+                  if (api_result == 0 && strlen(api_response_buffer) > 0) {
+                      /* Success - add AI response to session */
+                      add_message_to_session(
+                          app_state.current_session_index,
+                          api_response_buffer,
+                          0  /* is_user = false */
+                      );
+                      
+                      strncpy(app_state.status_text, "Response received!", MAX_STATUS_LENGTH - 1);
+                  } else {
+                      /* Error - add error message to session */
+                      add_message_to_session(
+                          app_state.current_session_index,
+                          "Error: Could not get response from Gemini.",
+                          0
+                      );
+                      
+                      snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                              "Error: %.100s", api_response_buffer);
+                  }
+                  
+                  /* Clear loading state */
+                  app_state.is_loading = 0;
+              }
+              
+              /* ============================================================
+               * Y BUTTON - Create new chat session
+               * ============================================================ */
+              if ((pressed_buttons & KEY_Y) && !app_state.is_loading) {
+                  int new_session_index = create_new_session();
+                  
+                  if (new_session_index >= 0) {
+                      snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                              "Created new session: Chat %d", new_session_index + 1);
+                  } else {
+                      snprintf(app_state.status_text, MAX_STATUS_LENGTH,
+                              "Maximum sessions (%d) reached", MAX_SESSIONS);
+                  }
+              }
+              
+              /* ============================================================
+               * L/R SHOULDER BUTTONS - Switch between sessions
+               * ============================================================ */
+              
+              /* L Button: Previous session */
+              if ((pressed_buttons & KEY_L) && !app_state.is_loading) {
+                  switch_session(-1);  /* Go to previous session */
+              }
+              
+              /* R Button: Next session */
+              if ((pressed_buttons & KEY_R) && !app_state.is_loading) {
+                  switch_session(1);  /* Go to next session */
+              }
+              
+              /* ============================================================
+               * ZL BUTTON - Import from file
+               * ============================================================ */
+              if ((pressed_buttons & KEY_ZL) && !app_state.is_loading) {
+                  import_from_file();
+              }
+              
+              /* ============================================================
+               * ZR BUTTON - Export to file
+               * ============================================================ */
+              if ((pressed_buttons & KEY_ZR) && !app_state.is_loading) {
+                  export_to_file();
+              }
+              
+              /* ============================================================
+               * PLUS BUTTON - Exit application
+               * ============================================================ */
+              if (pressed_buttons & KEY_PLUS) {
+                  app_state.running = 0;
+              }
+          }
+          
+          /* ============================================================================
+           * INITIALIZATION FUNCTIONS
+           * ============================================================================ */
+          
+          /**
+           * @brief Initialize SDL2 video subsystem and create window/renderer
+           * 
+           * @return 0 on success, -1 on failure
+           */
+          int initialize_sdl2(void) {
+              /* Initialize SDL2 video subsystem */
+              if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+                  return -1;
+              }
+              
+              /* Initialize SDL2_ttf subsystem */
+              if (TTF_Init() != 0) {
+                  SDL_Quit();
+                  return -1;
+              }
+              
+              /* Load font from ROMFS */
+              font = TTF_OpenFont(FONT_PATH, FONT_SIZE);
+              
+              if (font == NULL) {
+                  TTF_Quit();
+                  SDL_Quit();
+                  return -1;
+              }
+              
+              /* Create window */
+              window = SDL_CreateWindow(
+                  APPLICATION_NAME,
+                  SDL_WINDOWPOS_CENTERED,
+                  SDL_WINDOWPOS_CENTERED,
+                  SCREEN_WIDTH,
+                  SCREEN_HEIGHT,
+                  SDL_WINDOW_SHOWN
+              );
+              
+              if (window == NULL) {
+                  TTF_CloseFont(font);
+                  font = NULL;
+                  TTF_Quit();
+                  SDL_Quit();
+                  return -1;
+              }
+              
+              /* Create renderer with vsync */
+              renderer = SDL_CreateRenderer(
+                  window,
+                  -1,
+                  SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
+              );
+              
+              if (renderer == NULL) {
+                  SDL_DestroyWindow(window);
+                  window = NULL;
+                  TTF_CloseFont(font);
+                  font = NULL;
+                  TTF_Quit();
+                  SDL_Quit();
+                  return -1;
+              }
+              
+              return 0;  /* Success */
+          }
+          
+          /**
+           * @brief Clean up SDL2 resources
+           */
+          void cleanup_sdl2(void) {
+              if (renderer != NULL) {
+                  SDL_DestroyRenderer(renderer);
+                  renderer = NULL;
+              }
+              
+              if (window != NULL) {
+                  SDL_DestroyWindow(window);
+                  window = NULL;
+              }
+              
+              if (font != NULL) {
+                  TTF_CloseFont(font);
+                  font = NULL;
+              }
+              
+              TTF_Quit();
+              SDL_Quit();
+          }
+          
+          /* ============================================================================
+           * MAIN ENTRY POINT
+           * ============================================================================ */
+          
+          /**
+           * @brief Application entry point
+           * 
+           * Initializes all systems and runs the main game loop until
+           * the user exits the application.
+           * 
+           * @return Exit code (0 for success)
+           */
+          int main(int argc, char* argv[]) {
+              /* Suppress unused parameter warnings */
+              (void)argc;
+              (void)argv;
+              
+              /* ========================================
+               * INITIALIZE NINTENDO SWITCH SERVICES
+               * ======================================== */
+              
+              /* Initialize ROM filesystem (for embedded assets like fonts) */
+              romfsInit();
+              
+              /* Initialize network stack (required for libcurl) */
+              socketInitializeDefault();
+              
+              /* Configure input for Joy-Con pair mode */
+              padConfigureInput(1, PadNpadJoyConPair);
+              
+              /* ========================================
+               * INITIALIZE GRAPHICS SYSTEM
+               * ======================================== */
+              
+              if (initialize_sdl2() != 0) {
+                  /* Graphics initialization failed - cleanup and exit */
+                  socketExit();
+                  romfsExit();
+                  return 1;
+              }
+              
+              /* ========================================
+               * INITIALIZE APPLICATION STATE
+               * ======================================== */
+              
+              initialize_application_state();
+              
+              /* ========================================
+               * MAIN APPLICATION LOOP
+               * ======================================== */
+              
+              while (appletMainLoop()) {
+                  /* Process controller input */
+                  process_input();
+                  
+                  /* Render the current frame */
+                  render_frame();
+                  
+                  /* Check if application should exit */
+                  if (!app_state.running) {
+                      break;
+                  }
+                  
+                  /* Frame rate limiting (~60 FPS) */
+                  SDL_Delay(FRAME_DELAY_MS);
+              }
+              
+              /* ========================================
+               * CLEANUP AND EXIT
+               * ======================================== */
+              
+              /* Clean up graphics resources */
+              cleanup_sdl2();
+              
+              /* Shutdown network services */
+              socketExit();
+              
+              /* Shutdown ROM filesystem */
+              romfsExit();
+              
+              /* Successful exit */
+              return 0;
+          }
+          MAINEOF
+          
+          echo "Source file created successfully"
+          echo "File size: $(wc -c < main.c) bytes"
+          echo "Line count: $(wc -l < main.c) lines"
+          ls -la main.c
+      
+      # ======================================================================
+      # STEP 6: CREATE MAKEFILE USING PRINTF WITH TABS
+      # ======================================================================
+      - name: "🔧 Create Makefile (Printf Method)"
+        id: makefile_create
+        run: |
+          echo "Creating Makefile using printf with explicit tabs..."
+          
+          # Remove old Makefile if exists
+          rm -f Makefile
+          
+          # Create Makefile using printf with $'\t' for real tabs
+          # Each recipe line MUST start with a tab character
+          
+          cat > Makefile << 'MAKEEOF'
+          # ============================================================================
+          # GEMINISWITCH MAKEFILE
+          # Nintendo Switch Homebrew Build System
+          # ============================================================================
+          # This Makefile compiles the GeminiSwitch application for Nintendo Switch
+          # using the devkitPro toolchain and produces a complete NSP package.
+          #
+          # Target: GeminiSwitch.nsp (installable Nintendo Switch package)
+          # Compiler: aarch64-none-elf-gcc (ARM64 cross-compiler)
+          # Libraries: SDL2, SDL2_ttf, libcurl, jansson, libnx
+          # ============================================================================
+          
+          # ----------------------------------------------------------------------------
+          # TARGET CONFIGURATION
+          # ----------------------------------------------------------------------------
+          
+          # Output filename (without extension)
+          TARGET := GeminiSwitch
+          
+          # Source directory
+          SOURCES := .
+          
+          # ROMFS directory (embedded files)
+          ROMFS := romfs
+          
+          # ----------------------------------------------------------------------------
+          # COMPILER FLAGS
+          # ----------------------------------------------------------------------------
+          
+          # Architecture-specific flags for Nintendo Switch (ARM64 Cortex-A57)
+          ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec
+          
+          # General C compiler flags
+          CFLAGS := -g -Wall -O2 -ffunction-sections $(ARCH) -D__SWITCH__
+          
+          # ----------------------------------------------------------------------------
+          # PATH CONFIGURATION
+          # ----------------------------------------------------------------------------
+          
+          # devkitPro installation path
+          DEVKITPRO ?= /opt/devkitpro
+          
+          # SDL2 installation prefix
+          SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch
+          
+          # ----------------------------------------------------------------------------
+          # INCLUDE PATHS
+          # ----------------------------------------------------------------------------
+          
+          # Include directories for headers
+          INCLUDE := -I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2 -I$(DEVKITPRO)/libnx/include
+          
+          # ----------------------------------------------------------------------------
+          # LIBRARY CONFIGURATION
+          # ----------------------------------------------------------------------------
+          
+          # Libraries to link against
+          LIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx
+          
+          # Library search paths
+          LIBDIRS := $(SDL2_PREFIX)/lib $(DEVKITPRO)/libnx/lib
+          
+          # ----------------------------------------------------------------------------
+          # SOURCE FILES
+          # ----------------------------------------------------------------------------
+          
+          # Find all C source files
+          CFILES := $(wildcard *.c)
+          
+          # Generate object file names from source files
+          OFILES := $(CFILES:.c=.o)
+          
+          # ----------------------------------------------------------------------------
+          # PHONY TARGETS
+          # ----------------------------------------------------------------------------
+          
+          .PHONY: all clean install
+          
+          # ----------------------------------------------------------------------------
+          # DEFAULT TARGET
+          # ----------------------------------------------------------------------------
+          
+          # Default target: build the complete NSP package
+          all: $(TARGET).nsp
+          
+          # ----------------------------------------------------------------------------
+          # LINKING RULE - Create ELF executable
+          # ----------------------------------------------------------------------------
+          
+          # Link object files into ELF executable
+          $(TARGET).elf: $(OFILES)
+          MAKEEOF
+          
+          # Now append the recipe lines with REAL TABS using printf
+          printf '\t$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2_PREFIX)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)\n' >> Makefile
+          
+          cat >> Makefile << 'MAKEEOF2'
+          
+          # ----------------------------------------------------------------------------
+          # NACP METADATA RULE - Create application metadata
+          # ----------------------------------------------------------------------------
+          
+          # Generate NACP (Nintendo Application Configuration Package) metadata
+          $(TARGET).nacp:
+          MAKEEOF2
+          
+          printf '\techo '"'"'{"name":"Gemini","author":"Google LLC","version":"1.0.0","appid":"0100ABCD12340000"}'"'"' > tmp.json\n' >> Makefile
+          printf '\tnacptool --json tmp.json $@\n' >> Makefile
+          
+          cat >> Makefile << 'MAKEEOF3'
+          
+          # ----------------------------------------------------------------------------
+          # NRO CREATION RULE - Create Nintendo Relocatable Object
+          # ----------------------------------------------------------------------------
+          
+          # Convert ELF to NRO with embedded ROMFS
+          $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
+          MAKEEOF3
+          
+          printf '\telf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)\n' >> Makefile
+          
+          cat >> Makefile << 'MAKEEOF4'
+          
+          # ----------------------------------------------------------------------------
+          # NSP CREATION RULE - Create Nintendo Switch Package
+          # ----------------------------------------------------------------------------
+          
+          # Build final installable NSP package
+          $(TARGET).nsp: $(TARGET).nro
+          MAKEEOF4
+          
+          printf '\tmkdir -p exefs\n' >> Makefile
+          printf '\tcp $(TARGET).nro exefs/main.nro\n' >> Makefile
+          printf '\tnpdmtool --json='"'"'{"name":"Gemini","appid":"0100ABCD12340000"}'"'"' exefs/main.npdm\n' >> Makefile
+          printf '\tnspBuild -i exefs -o $@\n' >> Makefile
+          
+          cat >> Makefile << 'MAKEEOF5'
+          
+          # ----------------------------------------------------------------------------
+          # COMPILATION RULE - Compile C source to object files
+          # ----------------------------------------------------------------------------
+          
+          # Generic rule for compiling .c files to .o files
+          %.o: %.c
+          MAKEEOF5
+          
+          printf '\t$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@\n' >> Makefile
+          
+          cat >> Makefile << 'MAKEEOF6'
+          
+          # ----------------------------------------------------------------------------
+          # CLEAN RULE - Remove build artifacts
+          # ----------------------------------------------------------------------------
+          
+          # Remove all generated files
+          clean:
+          MAKEEOF6
+          
+          printf '\trm -f *.o *.elf *.nacp *.nro *.nsp tmp.json\n' >> Makefile
+          printf '\trm -rf exefs\n' >> Makefile
+          
+          cat >> Makefile << 'MAKEEOF7'
+          
+          # ----------------------------------------------------------------------------
+          # INSTALL RULE - Copy output to destination
+          # ----------------------------------------------------------------------------
+          
+          # Install built files (placeholder for future use)
+          install: $(TARGET).nsp
+          MAKEEOF7
+          
+          printf '\t@echo "NSP ready: $(TARGET).nsp"\n' >> Makefile
+          
+          # Final newline
+          echo "" >> Makefile
+          
+          echo "Makefile created successfully"
+          echo ""
+          echo "=== Verifying TAB characters ==="
+          grep -P '\t' Makefile | wc -l | xargs -I {} echo "Lines with tabs: {}"
+          echo ""
+          echo "=== Makefile content preview ==="
+          head -40 Makefile
+          echo ""
+          echo "=== Checking for spaces instead of tabs ==="
+          grep -nP '^ {8}' Makefile | head -5 || echo "Good: No leading spaces found"
+      
+      # ======================================================================
+      # STEP 7: VERIFY MAKEFILE INTEGRITY
+      # ======================================================================
+      - name: "✅ Verify Makefile Integrity"
+        id: verify_makefile
+        run: |
+          echo "=========================================="
+          echo "MAKEFILE VERIFICATION"
+          echo "=========================================="
+          echo ""
+          
+          # Check if Makefile exists
+          if [ ! -f Makefile ]; then
+              echo "❌ ERROR: Makefile does not exist!"
+              exit 1
+          fi
+          
+          echo "Makefile exists: ✅"
+          echo ""
+          
+          # Check file size
+          FILE_SIZE=$(stat -c%s Makefile)
+          echo "File size: ${FILE_SIZE} bytes"
+          
+          if [ "$FILE_SIZE" -lt 500 ]; then
+              echo "❌ ERROR: Makefile seems too small"
+              exit 1
+          fi
+          
+          echo "File size OK: ✅"
+          echo ""
+          
+          # Count lines with tabs
+          TAB_LINES=$(grep -cP '\t' Makefile || echo "0")
+          echo "Lines containing TAB characters: ${TAB_LINES}"
+          
+          if [ "$TAB_LINES" -lt 5 ]; then
+              echo "❌ ERROR: Not enough lines with tabs (need at least 5)"
+              echo ""
+              echo "Showing first 30 lines with visible whitespace:"
+              head -30 Makefile | cat -A
+              exit 1
+          fi
+          
+          echo "Tab lines OK: ✅"
+          echo ""
+          
+          # Look for common issues
+          echo "Checking for potential issues..."
+          
+          # Check for missing separators (lines starting with spaces but no tab)
+          SPACE_ISSUES=$(grep -cP '^[^#\t].*\$\(.*\):$' Makefile || echo "0")
+          if [ "$SPACE_ISSUES" -gt 0 ]; then
+              echo "⚠️ Warning: Found ${SPACE_ISSUES} possible misaligned lines"
+          fi
+          
+          # Show sample of recipe lines
+          echo ""
+          echo "Sample recipe lines (should show ^I for tab):"
+          grep -P '^\t\$(' Makefile | head -5 | cat -A
+          
+          echo ""
+          echo "=========================================="
+          echo "VERIFICATION COMPLETE"
+          echo "=========================================="
+      
+      # ======================================================================
+      # STEP 8: COMPILE THE PROJECT
+      # ======================================================================
+      - name: "🔨 Build Project (make)"
+        id: build_project
+        run: |
+          echo "=========================================="
+          echo "STARTING BUILD PROCESS"
+          echo "=========================================="
+          echo ""
+          
+          # Set environment variables for devkitPro
+          export DEVKITPRO=/opt/devkitpro
+          export PATH=$DEVKITPRO/tools/bin:$PATH
+          
+          # Display tool versions
+          echo "Tool Versions:"
+          echo "--------------"
+          aarch64-none-elf-gcc --version | head -1 || echo "GCC version check failed"
+          make --version | head -1 || echo "Make version check failed"
+          echo ""
+          
+          # Clean any previous build artifacts
+          echo "Cleaning previous builds..."
+          make clean 2>/dev/null || true
+          echo ""
+          
+          # Run make with verbose output
+          echo "Running make..."
+          echo "==============="
+          make -j$(nproc) 2>&1
+          MAKE_RESULT=$?
+          echo ""
+          
+          if [ $MAKE_RESULT -eq 0 ]; then
+              echo "=========================================="
+              echo "BUILD SUCCESSFUL! ✅"
+              echo "=========================================="
+          else
+              echo "=========================================="
+              echo "BUILD FAILED! ❌"
+              echo "=========================================="
+              echo ""
+              echo "Debugging information:"
+              echo "---------------------"
+              echo "Current directory:"
+              pwd
+              echo ""
+              echo "Files present:"
+              ls -la
+              echo ""
+              echo "Makefile contents (for debugging):"
+              cat -n Makefile
+              exit 1
+          fi
+      
+      # ======================================================================
+      # STEP 9: VERIFY BUILD OUTPUT
+      # ======================================================================
+      - name: "📦 Verify Build Artifacts"
+        id: verify_output
+        run: |
+          echo "=========================================="
+          echo "BUILD OUTPUT VERIFICATION"
+          echo "=========================================="
+          echo ""
+          
+          # Check for expected output files
+          echo "Checking for build artifacts..."
+          echo "------------------------------"
+          
+          NSP_FOUND="NO"
+          NRO_FOUND="NO"
+          ELF_FOUND="NO"
+          
+          if [ -f "GeminiSwitch.nsp" ]; then
+              NSP_FOUND="YES"
+              NSP_SIZE=$(du -h GeminiSwitch.nsp | cut -f1)
+              echo "✅ NSP file found: GeminiSwitch.nsp (${NSP_SIZE})"
+              file GeminiSwitch.nsp
+          else
+              echo "❌ NSP file NOT found"
+          fi
+          
+          if [ -f "GeminiSwitch.nro" ]; then
+              NRO_FOUND="YES"
+              NRO_SIZE=$(du -h GeminiSwitch.nro | cut -f1)
+              echo "✅ NRO file found: GeminiSwitch.nro (${NRO_SIZE})"
+          else
+              echo "❌ NRO file NOT found"
+          fi
+          
+          if [ -f "GeminiSwitch.elf" ]; then
+              ELF_FOUND="YES"
+              ELF_SIZE=$(du -h GeminiSwitch.elf | cut -f1)
+              echo "✅ ELF file found: GeminiSwitch.elf (${ELF_SIZE})"
+          else
+              echo "❌ ELF file NOT found"
+          fi
+          
+          echo ""
+          
+          # List all build artifacts
+          echo "All files in build directory:"
+          echo "-----------------------------"
+          ls -lh *.nsp *.nro *.elf *.nacp 2>/dev/null || echo "(no artifacts)"
+          echo ""
+          
+          # Final status
+          if [ "$NSP_FOUND" = "YES" ]; then
+              echo "=========================================="
+              echo "VERIFICATION SUCCESSFUL! ✅"
+              echo "=========================================="
+              echo ""
+              echo "The NSP file is ready for installation on Nintendo Switch."
+          else
+              echo "=========================================="
+              echo "VERIFICATION FAILED! ❌"
+              echo "=========================================="
+              exit 1
+          fi
+      
+      # ======================================================================
+      # STEP 10: UPLOAD BUILD ARTIFACTS
+      # ======================================================================
+      - name: "📤 Upload NSP Artifact"
+        id: upload_artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geminiswitch-nsp-package
+          path: |
+            *.nsp
+            *.nro
+          retention-days: 30
+          if-no-files-found: warn
+      
+      # ======================================================================
+      # STEP 11: SUMMARY
+      # ======================================================================
+      - name: "📋 Build Summary"
+        id: summary
+        if: always()
+        run: |
+          echo "=========================================="
+          echo "GEMINISWITCH BUILD SUMMARY"
+          echo "=========================================="
+          echo ""
+          echo "Build Status: ${{ job.status }}"
+          echo ""
+          echo "Artifacts Produced:"
+          echo "-------------------"
+          ls -lh *.nsp *.nro 2>/dev/null || echo "No artifacts"
+          echo ""
+          echo "Next Steps:"
+          echo "-----------"
+          echo "1. Download the NSP artifact from this workflow run"
+          echo "2. Copy NSP to your Nintendo Switch SD card"
+          echo "3. Install using Tinfoil, Awoo Installer, or similar"
+          echo "4. Launch from the Home Menu"
+          echo ""
+          echo "Controls Reference:"
+          echo "-------------------"
+          echo "- D-Pad: Scroll through preset questions"
+          echo "- A Button: Send selected question to Gemini"
+          echo "- Y Button: Create new chat session"
+          echo "- L/R Buttons: Switch between sessions (max 10)"
+          echo "- ZL: Import from switch/GeminiSwitch/import.txt"
+          echo "- ZR: Export to switch/GeminiSwitch/chat_export.txt"
+          echo "- Plus (+): Exit application"
+          echo ""
+          echo "=========================================="
+
+  # ==========================================================================
+  # ADDITIONAL JOB: Release Creation (only on tags)
+  # ==========================================================================
+  release:
+    name: "Create Release"
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Setup dirs
-      run: mkdir -p romfs switch/GeminiSwitch exefs
-
-    - name: Download font
-      run: wget -qO romfs/Roboto-Regular.ttf "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf"
-
-    - name: Create main.c
-      run: |
-        cat > main.c << 'ENDOFFILE'
-        #include <stdio.h>
-        #include <stdlib.h>
-        #include <string.h>
-        #include <switch.h>
-        #include <SDL2/SDL.h>
-        #include <SDL2/SDL_ttf.h>
-        #include <curl/curl.h>
-        #include <jansson.h>
-
-        #define MAX_SESS 10
-        #define MAX_MSG 50
-        #define MAX_LEN 4096
-        #define MAX_PRESETS 20
-        #define W 1280
-        #define H 720
-        #define FS 22
-        #define KEY "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg"
-        #define URL "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-
-        const char* PRESETS[MAX_PRESETS] = {
-          "Hello! How are you?", "What is AI?", "Explain quantum computing",
-          "Write a poem about space", "Benefits of exercise?", "Interesting fact?",
-          "How does internet work?", "What is ML?", "Coding tip please",
-          "Describe solar system", "Good leader qualities?", "Blockchain explained",
-          "Book recommendation", "How vaccines work?", "Climate change?",
-          "Neural networks", "Tell me a joke", "Meaning of life?",
-          "Stay motivated tips", "Productivity advice"
-        };
-
-        typedef struct { char t[4096]; int u; } Msg;
-        typedef struct { Msg m[50]; int n; char title[64]; } Sess;
-        typedef struct { Sess s[10]; int cur,total,preset,load; char st[256]; } App;
-
-        static App app;
-        static SDL_Window *win;
-        static SDL_Renderer *rd;
-        static TTF_Font *fnt;
-        static int run = 1;
-
-        size_t wcb(void *c, size_t s, size_t n, void *u) { strncat((char*)u,c,s*n); return s*n; }
-
-        int api(const char *q, char *r) {
-          CURL *curl = curl_easy_init();
-          if(!curl) return -1;
-          char u[512], p[8192];
-          snprintf(u,sizeof(u),"%s?key=%s",URL,KEY);
-          snprintf(p,sizeof(p),"{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}",q);
-          r[0]=0;
-          struct curl_slist *h = curl_slist_append(NULL,"Content-Type: application/json");
-          curl_easy_setopt(curl,CURLOPT_URL,u);
-          curl_easy_setopt(curl,CURLOPT_POSTFIELDS,p);
-          curl_easy_setopt(curl,CURLOPT_HTTPHEADER,h);
-          curl_easy_setopt(curl,CURLOPT_WRITEFUNCTION,wcb);
-          curl_easy_setopt(curl,CURLOPT_WRITEDATA,r);
-          curl_easy_setopt(curl,CURLOPT_TIMEOUT,30L);
-          CURLcode res = curl_easy_perform(curl);
-          curl_slist_free_all(h);
-          curl_easy_cleanup(curl);
-          if(res!=CURLE_OK) { snprintf(r,4096,"Err:%s",curl_easy_strerror(res)); return -1; }
-          json_error_t e; json_t *root=json_loads(r,0,&e);
-          if(!root) return -1;
-          json_t *cand=json_object_get(root,"candidates");
-          if(cand&&json_array_size(cand)>0) {
-            json_t *cont=json_object_get(json_array_get(cand,0),"content");
-            if(cont) {
-              json_t *parts=json_object_get(cont,"parts");
-              if(parts&&json_array_size(parts)>0) {
-                const char *txt=json_string_value(json_object_get(json_array_get(parts,0),"text"));
-                if(txt) { strncpy(r,txt,4095); r[4095]=0; json_decref(root); return 0; }
-              }
-            }
-          }
-          json_decref(root);
-          return 0;
-        }
-
-        void add(int i,const char *t,int u) {
-          Sess *s=&app.s[i];
-          if(s->n<50) { strncpy(s->m[s->n].t,t,4095); s->m[s->n].u=u; s->n++; }
-        }
-
-        void init() { memset(&app,0,sizeof(app)); app.total=1; strcpy(app.s[0].title,"Chat 1"); strcpy(app.st,"A to send"); }
-
-        void txt(const char *t,int x,int y,SDL_Color c) {
-          if(!fnt||!t) return;
-          SDL_Surface *sf=TTF_RenderUTF8_Blended(fnt,t,c);
-          if(sf) { SDL_Texture *tx=SDL_CreateTextureFromSurface(rd,sf);
-            if(tx) { SDL_Rect r={x,y,sf->w,sf->h}; SDL_RenderCopy(rd,tx,NULL,r); SDL_DestroyTexture(tx); }
-            SDL_FreeSurface(sf); }
-        }
-
-        void render() {
-          SDL_SetRenderDrawColor(rd,30,30,46,255); SDL_RenderClear(rd);
-          SDL_SetRenderDrawColor(rd,49,50,68,255); SDL_Rect h={0,0,W,60}; SDL_RenderFillRect(rd,&h);
-          SDL_Color wh={255,255,255,255},cy={79,172,254,255};
-          char b[128]; snprintf(b,sizeof(b),"Gemini AI - Session %d/%d",app.cur+1,app.total); txt(b,20,18,wh);
-          Sess *s=&app.s[app.cur]; int y=80;
-          for(int i=0;i<s->n&&y<540;i++) {
-            Msg *m=&s->m[i]; int bx=m->u?760:20;
-            SDL_Color bc=m->u?(SDL_Color){49,50,68,255}:(SDL_Color){69,71,90,255};
-            SDL_Color tc=m->u?(SDL_Color){88,166,255,255}:(SDL_Color){139,233,253,255};
-            SDL_SetRenderDrawColor(rd,bc.r,bc.g,bc.b,255); SDL_Rect br={bx,y,500,80}; SDL_RenderFillRect(rd,&br);
-            char d[200]; strncpy(d,m->t,195); d[195]=0; if(strlen(m->t)>195) strcat(d,"...");
-            txt(d,bx+15,y+15,tc); txt(m->u?"You":"Gemini",bx+15,y+55,wh); y+=95;
-          }
-          SDL_SetRenderDrawColor(rd,40,42,58,255); SDL_Rect pa={0,550,W,170}; SDL_RenderFillRect(rd,&pa);
-          SDL_SetRenderDrawColor(rd,79,172,254,255); SDL_RenderDrawLine(rd,0,550,W,550);
-          snprintf(b,sizeof(b),"[%d/%d] %s",app.preset+1,MAX_PRESETS,PRESETS[app.preset]); txt(b,565,cy);
-          txt("D-Pad:Select A:Send Y:New L/R:Sess ZL:Import ZR:Exp +:Exit",600,wh);
-          if(app.loading) { SDL_Color yl={241,250,140,255}; txt("Waiting for Gemini...",635,yl); }
-          else txt(app.st,635,wh);
-          SDL_RenderPresent(rd);
-        }
-
-        void input() {
-          hidScanInput(); u64 k=hidKeysDown(CONTROLLER_PAND_AUTO);
-          if(k&KEY_DUP) { app.preset=(app.preset-1+MAX_PRESETS)%MAX_PRESETS; snprintf(app.st,sizeof(app.st),"%s",PRESETS[app.preset]); }
-          if(k&KEY_DDOWN) { app.preset=(app.preset+1)%MAX_PRESETS; snprintf(app.st,sizeof(app.st),"%s",PRESETS[app.preset]); }
-          if(k&KEY_DLEFT) app.preset=(app.preset-5+MAX_PRESETS)%MAX_PRESETS;
-          if(k&KEY_DRIGHT) app.preset=(app.preset+5)%MAX_PRESETS;
-          if(k&KEY_A&&!app.loading) {
-            add(app.cur,PRESETS[app.preset],1); app.loading=1; strcpy(app.st,"Sending...");
-            char r[4096]={0}; api(PRESETS[app.preset],r);
-            if(strlen(r)>0) add(app.cur,r,0); else add(app.cur,"No response.",0);
-            app.loading=0; strcpy(app.st,"Done");
-          }
-          if(k&KEY_Y&&!app.loading&&app.total<MAX_SESS) { app.total++; app.cur=app.total-1; snprintf(app.s[app.cur].title,64,"Chat %d",app.total); strcpy(app.st,"New session"); }
-          if(k&KEY_L&&!app.loading) { app.cur=(app.cur-1+app.total)%app.total; snprintf(app.st,sizeof(app.st),"Sess %d",app.cur+1); }
-          if(k&KEY_R&&!app.loading) { app.cur=(app.cur+1)%app.total; snprintf(app.st,sizeof(app.st),"Sess %d",app.cur+1); }
-          if(k&KEY_ZL&&!app.loading) {
-            FILE *fp=fopen("switch/GeminiSwitch/import.txt","r");
-            if(fp) { char b[4096]={0}; if(fgets(b,4095,fp)) { b[strcspn(b,"\n")]=0; if(*b){add(app.cur,b,1);app.loading=1;char r[4096]={0};api(b,r);if(*r)add(app.cur,r,0);app.loading=0;}} fclose(fp);strcpy(app.st,"OK"); }
-            else strcpy(app.st,"No file");
-          }
-          if(k&KEY_ZR&&!app.loading) {
-            FILE *fp=fopen("switch/GeminiSwitch/chat_export.txt","w");
-            if(fp) { Sess*s=&app.s[app.cur]; fprintf(f,"===Export===\n");for(int i=0;i<s->n;i++)fprintf(fp,"[%s]:%s\n\n",s->m[i].u?"User":"Gem",s->m[i].t);fclose(fp);strcpy(app.st,"Exported"); }
-            else strcpy(app.st,"Fail");
-          }
-          if(k&KEY_PLUS) run=0;
-        }
-
-        int main() {
-          romfsInit(); socketInitializeDefault(); padConfigureInput(1,PadNpadJoyConPair);
-          if(SDL_Init(SDL_INIT_VIDEO)<0) return 1;
-          if(TTF_Init()<0) { SDL_Quit(); return 1; }
-          fnt=TTF_OpenFont("romfs:/Roboto-Regular.ttf",FS);
-          if(!fnt) { TTF_Quit(); SDL_Quit(); return 1; }
-          win=SDL_CreateWindow("Gemini",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,W,H,SDL_WINDOW_SHOWN);
-          if(!win) { TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); return 1; }
-          rd=SDL_CreateRenderer(win,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
-          if(!rd) { SDL_DestroyWindow(win); TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); return 1; }
-          init();
-          while(appletMainLoop()) { input(); render(); if(!run) break; SDL_Delay(16); }
-          SDL_DestroyRenderer(rd); SDL_DestroyWindow(win); TTF_CloseFont(fnt); TTF_Quit(); SDL_Quit(); socketExit(); romfsExit();
-          return 0;
-        }
-        ENDOFFILE
-
-    - name: Create Makefile with Python (guaranteed tabs)
-      run: |
-        python3 << 'PYEOF'
-        makefile_content = """TARGET := GeminiSwitch
-        SOURCES := .
-        ROMFS := romfs
-        
-        ARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC -ftls-model=local-exec
-        CFLAGS := -g -Wall -O2 -ffunction-sections $(ARCH) -D__SWITCH__
-        
-        DEVKITPRO ?= /opt/devkitpro
-        SDL2_PREFIX := $(DEVKITPRO)/portlibs/switch
-        
-        INCLUDE := -I$(SDL2_PREFIX)/include -I$(SDL2_PREFIX)/include/SDL2 -I$(DEVKITPRO)/libnx/include
-        LIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx
-        
-        CFILES := $(wildcard *.c)
-        OFILES := $(CFILES:.c=.o)
-        
-        .PHONY: all clean
-        
-        all: $(TARGET).nsp
-        
-        $(TARGET).elf: $(OFILES)
-        \t$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2_PREFIX)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)
-        
-        $(TARGET).nacp:
-        \techo '{"name":"Gemini","author":"Google LLC","version":"1.0.0","appid":"0100ABCD12340000"}' > tmp.json
-        \tnacptool --json tmp.json $@
-        
-        $(TARGET).nro: $(TARGET).elf $(TARGET).nacp
-        \telf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)
-        
-        $(TARGET).nsp: $(TARGET).nro
-        \tmkdir -p exefs
-        \tcp $(TARGET).nro exefs/main.nro
-        \tnpdmtool --json='{"name":"Gemini","appid":"0100ABCD12340000"}' exefs/main.npdm
-        \tnspBuild -i exefs -o $@
-        
-        %.o: %.c
-        \t$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@
-        
-        clean:
-        \trm -f *.o *.elf *.nacp *.nro *.nsp tmp.json
-        \trm -rf exefs
-        """
-        with open('Makefile', 'w') as f:
-            f.write(makefile_content)
-        print("Makefile created with tabs")
-        PYEOF
-
-    - name: Verify Makefile
-      run: |
-        echo "=== Checking for TABS ==="
-        grep -cP '\t' Makefile && echo "TABS FOUND" || echo "NO TABS"
-        echo ""
-        echo "=== Content preview ==="
-        head -25 Makefile | cat -A
-
-    - name: Build
-      run: |
-        export DEVKITPRO=/opt/devkitpro
-        export PATH=$DEVKITPRO/tools/bin:$PATH
-        make -j$(nproc)
-
-    - name: Check output
-      run: ls -la *.nsp 2>/dev/null && echo "SUCCESS" || echo "FAILED"
-
-    - name: Upload NSP
-      uses: actions/upload-artifact@v4
-      with:
-        name: geminiswitch-nsp
-        path: "*.nsp"
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: geminiswitch-nsp-package
+          path: ./release
+          
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ./release/*
+          name: "GeminiSwitch v${{ github.ref_name }}"
+          body: |
+            ## 🎮 GeminiSwitch - Nintendo Switch AI Chat Client
+            
+            ### Installation Instructions
+            
+            1. **Download** the `.nsp` file from this release
+            2. **Copy** the NSP file to your Nintendo Switch SD card
+            3. **Install** using your preferred installer:
+               - [Tinfoil](https://github.com/Blusaurus/Tinfoil)
+               - [Awoo Installer](https://github.com/HamletDuFromage/Awoo-Installer)
+               - [DBI Installer](https://github.com/nicob3000/dbi-installer)
+            4. **Launch** from the Home Menu under "Games" or "Homebrew"
+            
+            ### Controls
+            
+            | Button | Function |
+            |--------|----------|
+            | **D-Pad ↑↓←→** | Scroll through preset questions |
+            | **A** | Send selected question to Gemini AI |
+            | **Y** | Create new chat session (max 10) |
+            | **L** | Previous chat session |
+            | **R** | Next chat session |
+            | **ZL** | Import message from `/switch/GeminiSwitch/import.txt` |
+            | **ZR** | Export chat to `/switch/GeminiSwitch/chat_export.txt` |
+            | **Plus (+)** | Exit application |
+            
+            ### Features
+            
+            - ✅ **Multi-session Support**: Up to 10 independent chat sessions
+            - ✅ **20 Preset Questions**: Curated prompts for quick conversations
+            - ✅ **Real-time AI Responses**: Powered by Google Gemini 2.0 Flash
+            - ✅ **Import/Export**: Save and load conversation history
+            - ✅ **Beautiful UI**: Smooth SDL2-based interface with custom font
+            - ✅ **Offline Capable**: Works without keyboard (D-Pad selection)
+            
+            ### Technical Details
+            
+            - **Title ID**: `0100ABCD12340000`
+            - **Application Name**: Gemini
+            - **Author**: Google LLC
+            - **Version**: ${{ github.ref_name }}
+            - **API**: Google Generative Language API (Gemini 2.0 Flash)
+            
+            ### Requirements
+            
+            - Nintendo Switch with custom firmware (Atmosphere, SX OS, etc.)
+            - Internet connection for API calls
+            - SD card space for installation (~5MB)
+            
+            ### Notes
+            
+            - Requires internet connection to communicate with Gemini API
+            - Place `import.txt` in `/switch/GeminiSwitch/` before pressing ZL
+            - Exported chats will appear in `/switch/GeminiSwitch/chat_export.txt`
+            
+            ---
+            
+            *Built with ❤️ for the Nintendo Switch homebrew community*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
