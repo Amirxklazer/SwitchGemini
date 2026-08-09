@@ -29,7 +29,7 @@ jobs:
             echo "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAeAB4DASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYI0RVNfSVJCc0oNKCk6O0xNTk9SVFdVYSFk5O/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooA//Z" | base64 -d > icon.jpg
           fi
 
-      - name: Write main.c (Fixed for current libnx)
+      - name: Write main.c (simplified keyboard + D‑Pad only)
         run: |
           cat << 'EOF' > main.c
           #include <stdio.h>
@@ -242,35 +242,16 @@ jobs:
               return result;
           }
 
+          // Simple keyboard input using swkbdInputText (blocking, no complex state machine)
           char* getKeyboardInput() {
-              SwkbdInline swkbd;
-              if (R_FAILED(swkbdInlineCreate(&swkbd)))
-                  return NULL;
-
-              // Use the older libnx inline keyboard API (no appear arg)
-              swkbdInlineLaunchForLibraryApplet(&swkbd, SwkbdInlineMode_UserDisplay, 0);
-
+              SwkbdState swkbd;
+              swkbdInitialize(&swkbd, SwkbdType_Normal, 0);
+              swkbdSetOkButtonText(&swkbd, "Ask");
               char inputText[512] = "";
-              while (appletMainLoop()) {
-                  SDL_Event e; while (SDL_PollEvent(&e)) {}
-                  padUpdate(&pad);
-                  u64 kDown = padGetButtonsDown(&pad);
-                  if (kDown & HidNpadButton_B) {
-                      swkbdInlineClose(&swkbd);
-                      return NULL;
-                  }
-                  SwkbdState state = swkbdInlineUpdate(&swkbd, NULL);
-                  if (state == SwkbdState_Finished) {
-                      SwkbdResult res = swkbdInlineGetResult(&swkbd, inputText, sizeof(inputText));
-                      swkbdInlineClose(&swkbd);
-                      if (res == SwkbdResult_Ok && strlen(inputText) > 0)
-                          return strdup(inputText);
-                      return NULL;
-                  } else if (state == SwkbdState_Appearing) {
-                      swkbdInlineAppear(&swkbd, NULL);
-                  }
-              }
-              swkbdInlineClose(&swkbd);
+              SwkbdResult res = swkbdInputText(&swkbd, inputText, sizeof(inputText));
+              swkbdExit(&swkbd);
+              if (res == SwkbdResult_Ok && strlen(inputText) > 0)
+                  return strdup(inputText);
               return NULL;
           }
 
@@ -299,13 +280,9 @@ jobs:
                   padUpdate(&pad);
                   u64 kDown = padGetButtonsDown(&pad);
 
-                  int scrollDelta = 0;
-                  // Use correct analog stick members: pad.ly (left Y), pad.ry (right Y)
-                  if (kDown & HidNpadButton_Down || pad.ly > 20000) scrollDelta = 30;
-                  if (kDown & HidNpadButton_Up || pad.ly < -20000) scrollDelta = -30;
-                  if (pad.ry > 20000) scrollDelta = 60;
-                  if (pad.ry < -20000) scrollDelta = -60;
-                  scrollOffset += scrollDelta;
+                  // D‑Pad scroll only
+                  if (kDown & HidNpadButton_Down) scrollOffset += 30;
+                  if (kDown & HidNpadButton_Up)   scrollOffset -= 30;
                   if (scrollOffset < 0) scrollOffset = 0;
 
                   if (kDown & HidNpadButton_Plus) running = false;
