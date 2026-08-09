@@ -1,87 +1,247 @@
-name: Build NSP
+# =============================================================================
+# build.yml – GitHub Actions workflow for building Gemini (Switch NSP)
+# =============================================================================
+# This workflow compiles a Gemini AI chat client for Nintendo Switch.
+# It uses the official devkitPro Docker image with all dependencies pre‑installed.
+# The final output is an installable .nsp file.
+# =============================================================================
+
+name: Build Gemini NSP
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
+# -----------------------------------------------------------------------------
+# Use the official devkitPro Docker image – contains devkitA64, libnx, SDL2,
+# SDL2_ttf, libcurl, jansson, and all build tools.
+# -----------------------------------------------------------------------------
 jobs:
   build:
     runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkita64:latest
+    timeout-minutes: 30
+
+    env:
+      # Application metadata (used for NACP and NSP)
+      TITLE_ID:          0100ABCD12340000
+      APP_NAME:          Gemini
+      AUTHOR:            Google LLC
+      VERSION:           1.0.0
+      # Paths (already set in the container, but we define them for clarity)
+      DEVKITPRO:         /opt/devkitpro
+      DEVKITA64:         /opt/devkitpro/devkitA64
+      # We'll need ImageMagick – we'll install it if missing
+      ROMFS_DIR:         romfs
 
     steps:
-      - name: Checkout repository
+      # ----------------------------------------------------------------------
+      # 1. Checkout the repository (including submodules if any)
+      # ----------------------------------------------------------------------
+      - name: Checkout source code
         uses: actions/checkout@v4
-
-      - name: Install system dependencies (ImageMagick)
-        run: sudo apt-get update && sudo apt-get install -y imagemagick
-
-      - name: Install devkitPro and required packages
-        uses: devkitPro/installer-action@v1
         with:
-          pacman-packages: |
-            switch-dev
-            switch-tools
-            switch-hacbrewpack
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: Set devkitPro environment variables
+      # ----------------------------------------------------------------------
+      # 2. Install additional system packages (ImageMagick, curl, etc.)
+      #    The container is minimal; we add what's needed.
+      # ----------------------------------------------------------------------
+      - name: Install system dependencies
         run: |
-          echo "DEVKITPRO=/opt/devkitpro" >> $GITHUB_ENV
-          echo "DEVKITA64=/opt/devkitpro/devkitA64" >> $GITHUB_ENV
-          echo "/opt/devkitpro/tools/bin" >> $GITHUB_PATH
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            imagemagick \
+            file \
+            unzip \
+            ca-certificates \
+            jq \
+            xxd \
+            tree
+          rm -rf /var/lib/apt/lists/*
 
-      - name: Handle icon (convert icon.png if present)
+      # ----------------------------------------------------------------------
+      # 3. Verify that all required libraries and tools are present
+      #    (fail fast if something is missing).
+      # ----------------------------------------------------------------------
+      - name: Verify toolchain and libraries
         run: |
-          if [ -f icon.png ]; then
-            echo "Converting icon.png to 256x256 JPEG..."
-            convert icon.png -resize 256x256 -quality 85 icon.jpg
+          set -e
+          echo "::group::Verifying tools"
+          aarch64-none-elf-gcc --version | head -1
+          echo "--- libnx ---"
+          ls -la $DEVKITPRO/libnx/include/switch.h
+          echo "--- SDL2 ---"
+          pkg-config --modversion sdl2 2>/dev/null || echo "SDL2 pkg-config not found, but we use direct linking"
+          ls -la $DEVKITPRO/portlibs/switch/lib/libSDL2.a
+          echo "--- SDL2_ttf ---"
+          ls -la $DEVKITPRO/portlibs/switch/lib/libSDL2_ttf.a
+          echo "--- libcurl ---"
+          ls -la $DEVKITPRO/portlibs/switch/lib/libcurl.a
+          echo "--- jansson ---"
+          ls -la $DEVKITPRO/portlibs/switch/lib/libjansson.a
+          echo "--- npdmtool ---"
+          npdmtool --version || echo "npdmtool not found? Should be in PATH."
+          echo "--- hacbrewpack ---"
+          hacbrewpack --version || echo "hacbrewpack not found? Should be in PATH."
+          echo "::endgroup::"
+
+      # ----------------------------------------------------------------------
+      # 4. Ensure the romfs directory exists and contains the font.
+      #    If Roboto-Regular.ttf is not present, download it.
+      # ----------------------------------------------------------------------
+      - name: Prepare ROMFS (font)
+        run: |
+          set -e
+          mkdir -p "$ROMFS_DIR"
+          if [ ! -f "$ROMFS_DIR/Roboto-Regular.ttf" ]; then
+            echo "Downloading Roboto-Regular.ttf..."
+            curl -L -o "$ROMFS_DIR/Roboto-Regular.ttf" \
+              "https://github.com/google/fonts/raw/main/apache/roboto/Roboto-Regular.ttf"
           else
-            echo "No icon.png found; relying on built-in default base64 icon."
+            echo "Font already exists."
           fi
+          ls -la "$ROMFS_DIR"
 
-      - name: Build NRO
-        run: make
-
-      - name: Locate built NRO
-        id: nro
+      # ----------------------------------------------------------------------
+      # 5. Process the application icon.
+      #    - If icon.png is present, convert to 256x256 JPEG.
+      #    - Otherwise, create a default icon (simple blue) so the NSP has one.
+      #    The default base64 JPEG is embedded in the code; this step provides
+      #    an external icon that can be used instead.
+      # ----------------------------------------------------------------------
+      - name: Handle application icon
         run: |
-          NRO_FILE=$(find . -maxdepth 1 -name "*.nro" | head -n 1)
+          set -e
+          if [ -f "icon.png" ]; then
+            echo "Converting icon.png to 256x256 JPEG..."
+            convert icon.png -resize 256x256 -quality 90 icon.jpg
+          else
+            echo "No icon.png found – creating a default icon.jpg (blue square)."
+            convert -size 256x256 xc:royalblue -quality 90 icon.jpg
+          fi
+          # Verify size and format
+          identify icon.jpg | grep "256x256" || (echo "Icon not 256x256" && exit 1)
+
+      # ----------------------------------------------------------------------
+      # 6. Build the .nro with ROMFS embedded.
+      #    We set ROMFS=romfs to embed the font and any other assets.
+      #    The Makefile must use $(ROMFS) in its rules.
+      # ----------------------------------------------------------------------
+      - name: Build NRO
+        id: build_nro
+        run: |
+          set -e
+          echo "=== Building NRO with ROMFS=$ROMFS_DIR ==="
+          # Clean any previous build
+          make clean || true
+          # Build with ROMFS
+          make ROMFS="$ROMFS_DIR" -j$(nproc)
+          # Locate the generated .nro (it might be in the root or in output/)
+          NRO_FILE=$(find . -maxdepth 1 -name "*.nro" | head -1)
           if [ -z "$NRO_FILE" ]; then
-            echo "No .nro file found! Build may have failed."
+            echo "ERROR: No .nro file produced!"
             exit 1
           fi
+          echo "NRO built: $NRO_FILE"
           echo "nro_path=$NRO_FILE" >> $GITHUB_OUTPUT
-          echo "Found NRO: $NRO_FILE"
+          ls -lh "$NRO_FILE"
 
-      - name: Generate control.nacp using npdmtool
+      # ----------------------------------------------------------------------
+      # 7. Generate the NACP (control.nacp) using npdmtool.
+      #    We create a JSON description with the required metadata.
+      # ----------------------------------------------------------------------
+      - name: Generate control.nacp
         run: |
+          set -e
           cat > control.json <<EOF
           {
-            "title_id": "0100ABCD12340000",
-            "name": "Gemini",
-            "author": "Google LLC",
-            "version": "1.0.0"
+            "title_id": "$TITLE_ID",
+            "name": "$APP_NAME",
+            "author": "$AUTHOR",
+            "version": "$VERSION",
+            "description": "Gemini AI chat client for Nintendo Switch."
           }
           EOF
           npdmtool --json=control.json --nacp=control.nacp
+          # Verify it was created
+          file control.nacp
 
-      - name: Prepare NSP contents
+      # ----------------------------------------------------------------------
+      # 8. Prepare the NSP contents directory.
+      #    Copy the NRO, NACP, and icon into a staging directory.
+      #    The ROMFS will be included as a directory (hacbrewpack will pack it).
+      # ----------------------------------------------------------------------
+      - name: Assemble NSP contents
         run: |
+          set -e
           mkdir -p nsp_contents
-          cp "${{ steps.nro.outputs.nro_path }}" nsp_contents/exefs.nro
+          cp "${{ steps.build_nro.outputs.nro_path }}" nsp_contents/exefs.nro
           cp control.nacp nsp_contents/control.nacp
-          # Optionally copy icon.jpg if present (hacbrewpack will include it automatically if placed correctly)
           if [ -f icon.jpg ]; then
             cp icon.jpg nsp_contents/icon.jpg
           fi
+          # Copy the entire romfs directory (including the font)
+          cp -r "$ROMFS_DIR" nsp_contents/romfs
+          echo "Contents of nsp_contents:"
+          tree nsp_contents || ls -laR nsp_contents
 
-      - name: Build NSP using hacbrewpack
+      # ----------------------------------------------------------------------
+      # 9. Build the final NSP using hacbrewpack.
+      #    The -t flag sets the Title ID, -o sets the output filename.
+      # ----------------------------------------------------------------------
+      - name: Create NSP
         run: |
-          hacbrewpack -t 0100ABCD12340000 -o Gemini.nsp nsp_contents
+          set -e
+          hacbrewpack -t "$TITLE_ID" -o "$APP_NAME.nsp" nsp_contents
+          # Verify that the NSP exists
+          if [ ! -f "$APP_NAME.nsp" ]; then
+            echo "ERROR: NSP not created!"
+            exit 1
+          fi
+          ls -lh "$APP_NAME.nsp"
+          # Optionally, use hactool to inspect (if available)
+          if command -v hactool &> /dev/null; then
+            hactool -i "$APP_NAME.nsp" || echo "hactool inspection failed, but NSP was created."
+          fi
 
+      # ----------------------------------------------------------------------
+      # 10. Generate checksums for integrity verification.
+      # ----------------------------------------------------------------------
+      - name: Generate checksums
+        run: |
+          set -e
+          sha256sum "$APP_NAME.nsp" > "$APP_NAME.nsp.sha256"
+          md5sum "$APP_NAME.nsp" > "$APP_NAME.nsp.md5"
+          cat "$APP_NAME.nsp.sha256"
+          cat "$APP_NAME.nsp.md5"
+
+      # ----------------------------------------------------------------------
+      # 11. Upload the NSP and checksum files as workflow artifacts.
+      # ----------------------------------------------------------------------
       - name: Upload NSP artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Gemini.nsp
-          path: Gemini.nsp
+          name: ${{ env.APP_NAME }}.nsp
+          path: |
+            ${{ env.APP_NAME }}.nsp
+            ${{ env.APP_NAME }}.nsp.sha256
+            ${{ env.APP_NAME }}.nsp.md5
+          retention-days: 30
+          if-no-files-found: error
+
+      # ----------------------------------------------------------------------
+      # 12. Print a success message.
+      # ----------------------------------------------------------------------
+      - name: Build complete
+        run: |
+          echo "✅ Build succeeded!"
+          echo "Title ID: $TITLE_ID"
+          echo "App: $APP_NAME"
+          echo "Author: $AUTHOR"
+          echo "NSP is available in the workflow artifacts."
