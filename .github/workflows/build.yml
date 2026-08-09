@@ -14,10 +14,17 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Install Dependencies
+      - name: Verify Pre-Installed Libraries
         run: |
-          dkp-pacman -Sy --noconfirm
-          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-curl switch-jansson --noconfirm
+          echo "Checking SDL2 headers..."
+          ls /opt/devkitpro/portlibs/switch/include/SDL2/SDL.h && echo "SDL2 headers OK"
+          echo "Checking libcurl..."
+          ls /opt/devkitpro/portlibs/switch/lib/libcurl.a && echo "libcurl OK"
+          echo "Checking jansson..."
+          ls /opt/devkitpro/portlibs/switch/lib/libjansson.a && echo "jansson OK"
+          echo "Checking audin..."
+          ls /opt/devkitpro/libnx/lib/libaudin.a && echo "audin OK"
+          echo "All required libraries are present."
 
       - name: Download Font
         run: |
@@ -65,7 +72,6 @@ jobs:
           #define VOICE_SAMPLE_RATE 16000
           #define VOICE_MAX_SECONDS 10
 
-          // Hardcoded API key
           const char* API_KEY = "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg";
 
           typedef struct {
@@ -543,8 +549,8 @@ jobs:
           ROMFS       := romfs
 
           PORTLIBS    := $(DEVKITPRO)/portlibs/switch
-          SDL2_INC    := $(shell PKG_CONFIG_PATH=$(PORTLIBS)/lib/pkgconfig pkg-config --cflags sdl2 SDL2_ttf libcurl jansson)
-          SDL2_LIBS   := $(shell PKG_CONFIG_PATH=$(PORTLIBS)/lib/pkgconfig pkg-config --static --libs sdl2 SDL2_ttf libcurl jansson)
+          SDL2_INC    := -I$(PORTLIBS)/include -I$(PORTLIBS)/include/SDL2
+          SDL2_LIBS   := -L$(PORTLIBS)/lib -lSDL2 -lSDL2_ttf -lcurl -ljansson
 
           export INCLUDE := $(foreach dir,$(INCLUDES),-I$(TOPDIR)/$(dir)) -I$(DEVKITPRO)/libnx/include -I$(DEPSDIR) $(SDL2_INC)
 
