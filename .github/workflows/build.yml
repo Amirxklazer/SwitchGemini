@@ -135,29 +135,29 @@ jobs:
         }
         EOF
 
-    - name: Create Makefile (simple)
+    - name: Create Makefile
       run: |
-        printf 'TARGET := GeminiSwitch\nROMFS := romfs\nARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC\nCFLAGS := -g -Wall -O2 $(ARCH) -D__SWITCH__\nDEVKITPRO ?= /opt/devkitpro\nSDL2 := $(DEVKITPRO)/portlibs/switch\nINCLUDE := -I$(SDL2)/include -I$(SDL2)/include/SDL2 -I$(DEVKITPRO)/libnx/include\nLIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx\nCFILES := $(wildcard *.c)\nOFILES := $(CFILES:.c=.o)\n.PHONY: all clean\nall: $(TARGET).nsp\n$(TARGET).elf: $(OFILES)\n' > Makefile
+        printf 'TARGET := GeminiSwitch\nROMFS := romfs\nCC := aarch64-none-elf-gcc\nARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC\nCFLAGS := -g -Wall -O2 $(ARCH) -D__SWITCH__\nDEVKITPRO ?= /opt/devkitpro\nSDL2 := $(DEVKITPRO)/portlibs/switch\nINCLUDE := -I$(SDL2)/include -I$(SDL2)/include/SDL2 -I$(DEVKITPRO)/libnx/include\nLIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx\nCFILES := $(wildcard *.c)\nOFILES := $(CFILES:.c=.o)\n.PHONY: all clean\nall: $(TARGET).nsp\n$(TARGET).elf: $(OFILES)\n' > Makefile
         printf '\t$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)\n' >> Makefile
         printf '\n$(TARGET).nacp:\n' >> Makefile
-        printf '\techo '"'"'{"name":"Gemini","author":"Google LLC","version":"1.0.0","appid":"0100ABCD12340000"}'"'"' > tmp.json && nacptool --json tmp.json $@\n' >> Makefile
+        printf '\tnacptool --create "Gemini" "Google LLC" "1.0.0" $@ --titleid="0100ABCD12340000"\n' >> Makefile
         printf '\n$(TARGET).nro: $(TARGET).elf $(TARGET).nacp\n' >> Makefile
         printf '\telf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)\n' >> Makefile
         printf '\n$(TARGET).nsp: $(TARGET).nro\n' >> Makefile
-        printf '\tmkdir -p exefs && cp $(TARGET).nro exefs/main.nro && npdmtool --json='"'"'{"name":"Gemini","appid":"0100ABCD12340000"}'"'"' exefs/main.npdm && nspBuild -i exefs -o $@\n' >> Makefile
+        printf '\tmkdir -p exefs && cp $(TARGET).nro exefs/main.nro && npdmtool --create exefs/main.npdm && nspBuild -i exefs -o $@\n' >> Makefile
         printf '\n%%.o: %%.c\n' >> Makefile
         printf '\t$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@\n' >> Makefile
         printf '\nclean:\n' >> Makefile
-        printf '\trm -f *.o *.elf *.nacp *.nro *.nsp tmp.json && rm -rf exefs\n' >> Makefile
+        printf '\trm -f *.o *.elf *.nacp *.nro *.nsp && rm -rf exefs\n' >> Makefile
 
     - name: Build
       run: |
         export DEVKITPRO=/opt/devkitpro
-        export PATH=$DEVKITPRO/tools/bin:$PATH
+        export PATH=$DEVKITPRO/devkitA64/bin:$PATH
         make -j$(nproc)
 
     - name: Check
-      run: ls -la *.nsp && echo "SUCCESS" || echo "FAILED"
+      run: ls -la *.nsp 2>/dev/null && echo "SUCCESS" || echo "FAILED"
 
     - name: Upload
       uses: actions/upload-artifact@v4
