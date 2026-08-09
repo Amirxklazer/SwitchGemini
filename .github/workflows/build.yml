@@ -56,12 +56,12 @@ jobs:
           identify icon.jpg
 
       # --------------------------------------------------------------------
-      # Write Makefile – Fixed library order
+      # Write Makefile – fixed: removed -lSDL2_main, correct library order
       # --------------------------------------------------------------------
       - name: Create Makefile
         run: |
           cat > Makefile <<'EOF'
-          # Makefile for Gemini – fixed library linking order
+          # Makefile for Gemini – libraries for Switch
           DEVKITPRO   ?= /opt/devkitpro
           DEVKITA64   ?= $(DEVKITPRO)/devkitA64
           PORTLIBS    := $(DEVKITPRO)/portlibs/switch
@@ -84,9 +84,9 @@ jobs:
           LDFLAGS  += -L$(DEVKITPRO)/libnx/lib
           LDFLAGS  += -L$(PORTLIBS)/lib
 
-          # Libraries MUST be in this order: nx first, then SDL, then others
+          # Correct library order: nx first, then SDL, curl, jansson, system libs
           LIBS := -lnx
-          LIBS += -lSDL2 -lSDL2_ttf -lSDL2_main
+          LIBS += -lSDL2 -lSDL2_ttf
           LIBS += -lcurl -ljansson
           LIBS += -lz -lm -lEGL -lglapi -ldrm_nouveau -lpthread
 
@@ -116,7 +116,7 @@ jobs:
           EOF
 
       # --------------------------------------------------------------------
-      # Write main.c – Complete Gemini client
+      # Write main.c – fixed strncpy warnings (use snprintf)
       # --------------------------------------------------------------------
       - name: Create main.c
         run: |
@@ -204,9 +204,9 @@ jobs:
           static void add_message(Chat *chat, const char *role, const char *text) {
               if (chat->msg_count >= MAX_MESSAGES) return;
               Message *msg = &chat->msgs[chat->msg_count++];
-              strncpy(msg->role, role, sizeof(msg->role)-1);
-              strncpy(msg->text, text, sizeof(msg->text)-1);
-              msg->text[sizeof(msg->text)-1] = '\0';
+              // Use snprintf to avoid truncation warnings and ensure null termination
+              snprintf(msg->role, sizeof(msg->role), "%s", role);
+              snprintf(msg->text, sizeof(msg->text), "%s", text);
           }
 
           static void clear_chat(Chat *chat) {
