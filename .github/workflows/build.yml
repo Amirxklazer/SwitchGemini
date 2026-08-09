@@ -56,12 +56,12 @@ jobs:
           identify icon.jpg
 
       # --------------------------------------------------------------------
-      # Write Makefile – using a multi‑line YAML string (no heredoc)
+      # Write Makefile – Fixed library order
       # --------------------------------------------------------------------
       - name: Create Makefile
         run: |
           cat > Makefile <<'EOF'
-          # Makefile for Gemini – explicit paths
+          # Makefile for Gemini – fixed library linking order
           DEVKITPRO   ?= /opt/devkitpro
           DEVKITA64   ?= $(DEVKITPRO)/devkitA64
           PORTLIBS    := $(DEVKITPRO)/portlibs/switch
@@ -83,10 +83,12 @@ jobs:
           LDFLAGS  += -g $(ARCH)
           LDFLAGS  += -L$(DEVKITPRO)/libnx/lib
           LDFLAGS  += -L$(PORTLIBS)/lib
-          LDFLAGS  += -lnx
-          LDFLAGS  += -lSDL2 -lSDL2_ttf
-          LDFLAGS  += -lcurl -ljansson
-          LDFLAGS  += -lz -lm -lEGL -lglapi -ldrm_nouveau -lpthread
+
+          # Libraries MUST be in this order: nx first, then SDL, then others
+          LIBS := -lnx
+          LIBS += -lSDL2 -lSDL2_ttf -lSDL2_main
+          LIBS += -lcurl -ljansson
+          LIBS += -lz -lm -lEGL -lglapi -ldrm_nouveau -lpthread
 
           CFILES := $(wildcard *.c)
           OBJS   := $(CFILES:.c=.o)
@@ -101,7 +103,7 @@ jobs:
 
           $(TARGET).elf: $(OBJS)
           	@echo "  [LD]    $@"
-          	@$(CC) $(LDFLAGS) $(OBJS) -o $@
+          	@$(CC) $(LDFLAGS) $(OBJS) $(LIBS) -o $@
 
           %.o: %.c
           	@echo "  [CC]    $<"
@@ -114,7 +116,7 @@ jobs:
           EOF
 
       # --------------------------------------------------------------------
-      # Write main.c – the complete Gemini client (fixed triggers)
+      # Write main.c – Complete Gemini client
       # --------------------------------------------------------------------
       - name: Create main.c
         run: |
@@ -126,7 +128,6 @@ jobs:
           // ZL (trigger) import, ZR (trigger) export,
           // D‑pad select preset questions, A send,
           // touch support, Plus exit.
-          // Uses SDL2, SDL2_ttf, libcurl, jansson.
           // ================================================================
 
           #include <stdio.h>
