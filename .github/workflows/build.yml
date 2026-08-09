@@ -1,4 +1,4 @@
-name: Build Gemini NRO (Working)
+name: Build Gemini NRO (Final – Working)
 
 on:
   push:
@@ -44,7 +44,7 @@ jobs:
             convert -size 256x256 xc:royalblue -quality 90 icon.jpg
           fi
 
-      - name: Write main.c (Gemini client)
+      - name: Write main.c (with romfsInit, proper SDL init)
         run: |
           cat << 'EOF' > main.c
           #include <stdio.h>
@@ -53,6 +53,7 @@ jobs:
           #include <stdbool.h>
           #include <sys/stat.h>
           #include <unistd.h>
+          #include <switch.h>
           #include <SDL2/SDL.h>
           #include <SDL2/SDL_ttf.h>
           #include <curl/curl.h>
@@ -299,12 +300,21 @@ jobs:
           }
 
           int main(int argc, char *argv[]) {
+              // --- CRUCIAL: mount ROMFS ---
+              if (romfsInit() != 0) {
+                  printf("romfsInit failed!\n");
+                  return 1;
+              }
+
               if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
                   printf("SDL_Init failed\n");
+                  romfsExit();
                   return 1;
               }
               if (TTF_Init() < 0) {
                   printf("TTF_Init failed\n");
+                  SDL_Quit();
+                  romfsExit();
                   return 1;
               }
 
@@ -312,20 +322,33 @@ jobs:
                                        1280, 720, SDL_WINDOW_SHOWN);
               if (!window) {
                   printf("Window creation failed\n");
+                  TTF_Quit();
+                  SDL_Quit();
+                  romfsExit();
                   return 1;
               }
               renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
               if (!renderer) {
                   printf("Renderer creation failed\n");
+                  SDL_DestroyWindow(window);
+                  TTF_Quit();
+                  SDL_Quit();
+                  romfsExit();
                   return 1;
               }
 
+              // Load font from ROMFS
               font = TTF_OpenFont("romfs:/Roboto-Regular.ttf", 22);
               if (!font) {
                   printf("Font load from romfs failed, trying local...\n");
                   font = TTF_OpenFont("Roboto-Regular.ttf", 22);
                   if (!font) {
                       printf("Font load failed\n");
+                      SDL_DestroyRenderer(renderer);
+                      SDL_DestroyWindow(window);
+                      TTF_Quit();
+                      SDL_Quit();
+                      romfsExit();
                       return 1;
                   }
               }
@@ -436,6 +459,10 @@ jobs:
               SDL_DestroyWindow(window);
               TTF_Quit();
               SDL_Quit();
+
+              // --- unmount ROMFS ---
+              romfsExit();
+
               return 0;
           }
           EOF
