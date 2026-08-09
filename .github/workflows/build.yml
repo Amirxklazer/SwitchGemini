@@ -1,169 +1,87 @@
 name: Build NSP
 
-on: [push, workflow_dispatch]
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: devkitpro/devkita64:latest
-    
+
     steps:
-    - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Setup
-      run: |
-        mkdir -p romfs switch/GeminiSwitch exefs
-        wget -qO romfs/Roboto-Regular.ttf "https://github.com/googlefonts/roboto/raw/main/src/hinted/Roboto-Regular.ttf"
+      - name: Install system dependencies (ImageMagick)
+        run: sudo apt-get update && sudo apt-get install -y imagemagick
 
-    - name: Create source (FIXED)
-      run: |
-        cat > main.c << 'EOF'
-        #include <stdio.h>
-        #include <string.h>
-        #include <switch.h>
-        #include <SDL2/SDL.h>
-        #include <SDL2/SDL_ttf.h>
-        #include <curl/curl.h>
-        #include <jansson.h>
+      - name: Install devkitPro and required packages
+        uses: devkitPro/installer-action@v1
+        with:
+          pacman-packages: |
+            switch-dev
+            switch-tools
+            switch-hacbrewpack
 
-        static const char* qs[20] = {
-          "Hello!","What is AI?","Explain quantum computing",
-          "Write a poem","Benefits of exercise?","Interesting fact?",
-          "How internet works?","What is ML?","Coding tip",
-          "Solar system","Good leader?","Blockchain?",
-          "Book recommendation","Vaccines?","Climate change?",
-          "Neural networks","Joke?","Meaning of life?",
-          "Stay motivated?","Productivity tips"
-        };
+      - name: Set devkitPro environment variables
+        run: |
+          echo "DEVKITPRO=/opt/devkitpro" >> $GITHUB_ENV
+          echo "DEVKITA64=/opt/devkitpro/devkitA64" >> $GITHUB_ENV
+          echo "/opt/devkitpro/tools/bin" >> $GITHUB_PATH
 
-        typedef struct { char t[4096]; int u; } Msg;
-        typedef struct { Msg m[50]; int n; } Sess;
-        typedef struct { Sess s[10]; int cur,tot,p,load; char st[256]; } App;
+      - name: Handle icon (convert icon.png if present)
+        run: |
+          if [ -f icon.png ]; then
+            echo "Converting icon.png to 256x256 JPEG..."
+            convert icon.png -resize 256x256 -quality 85 icon.jpg
+          else
+            echo "No icon.png found; relying on built-in default base64 icon."
+          fi
 
-        static App app;
-        static SDL_Window *w; static SDL_Renderer *r; static TTF_Font *f;
-        static int run=1;
+      - name: Build NRO
+        run: make
 
-        size_t wc(void *c,size_t s,size_t n,void *u){strncat((char*)u,c,s*n);return s*n;}
+      - name: Locate built NRO
+        id: nro
+        run: |
+          NRO_FILE=$(find . -maxdepth 1 -name "*.nro" | head -n 1)
+          if [ -z "$NRO_FILE" ]; then
+            echo "No .nro file found! Build may have failed."
+            exit 1
+          fi
+          echo "nro_path=$NRO_FILE" >> $GITHUB_OUTPUT
+          echo "Found NRO: $NRO_FILE"
 
-        void api(const char*q,char*resp){
-          CURL*c=curl_easy_init();if(!c)return;
-          char u[512],p[8192];
-          snprintf(u,512,"%s?key=%s","https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent","AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg");
-          snprintf(p,8192,"{\"contents\":[{\"role\":\"user\",\"parts\":[{\"text\":\"%s\"}]}]}",q);
-          resp[0]=0;
-          struct curl_slist*h=curl_slist_append(0,"Content-Type: application/json");
-          curl_easy_setopt(c,CURLOPT_URL,u);curl_easy_setopt(c,CURLOPT_POSTFIELDS,p);
-          curl_easy_setopt(c,CURLOPT_HTTPHEADER,h);curl_easy_setopt(c,CURLOPT_WRITEFUNCTION,wc);
-          curl_easy_setopt(c,CURLOPT_WRITEDATA,resp);curl_easy_setopt(c,CURLOPT_TIMEOUT,30L);
-          curl_easy_perform(c);curl_slist_free_all(h);curl_easy_cleanup(c);
-          json_error_t e;json_t*root=json_loads(resp,0,&e);
-          if(root){json_t*ca=json_object_get(root,"candidates");
-            if(ca&&json_array_size(ca)>0){
-              json_t*co=json_object_get(json_array_get(ca,0),"content");
-              if(co){json_t*pa=json_object_get(co,"parts");
-                if(pa&&json_array_size(pa)>0){
-                  const char*tx=json_string_value(json_object_get(json_array_get(pa,0),"text"));
-                  if(tx){strncpy(resp,tx,4095);resp[4095]=0;}
-                }
-              }
-            }
-            json_decref(root);
+      - name: Generate control.nacp using npdmtool
+        run: |
+          cat > control.json <<EOF
+          {
+            "title_id": "0100ABCD12340000",
+            "name": "Gemini",
+            "author": "Google LLC",
+            "version": "1.0.0"
           }
-        }
+          EOF
+          npdmtool --json=control.json --nacp=control.nacp
 
-        void add(int i,const char*t,int u){
-          if(app.s[i].n<50){strncpy(app.s[i].m[app.s[i].n].t,t,4095);app.s[i].m[app.s[i].n].u=u;app.s[i].n++;}
-        }
+      - name: Prepare NSP contents
+        run: |
+          mkdir -p nsp_contents
+          cp "${{ steps.nro.outputs.nro_path }}" nsp_contents/exefs.nro
+          cp control.nacp nsp_contents/control.nacp
+          # Optionally copy icon.jpg if present (hacbrewpack will include it automatically if placed correctly)
+          if [ -f icon.jpg ]; then
+            cp icon.jpg nsp_contents/icon.jpg
+          fi
 
-        void txt(const char*t,int x,int y,SDL_Color c){
-          if(!f||!t)return;
-          SDL_Surface*s=TTF_RenderUTF8_Blended(f,t,c);
-          if(s){SDL_Texture*tex=SDL_CreateTextureFromSurface(r,s);
-            if(tex){SDL_Rect d={x,y,s->w,s->h};SDL_RenderCopy(r,tex,0,&d);SDL_DestroyTexture(tex);}
-            SDL_FreeSurface(s);}
-        }
+      - name: Build NSP using hacbrewpack
+        run: |
+          hacbrewpack -t 0100ABCD12340000 -o Gemini.nsp nsp_contents
 
-        void render(){
-          SDL_SetRenderDrawColor(r,30,30,46,255);SDL_RenderClear(r);
-          SDL_SetRenderDrawColor(r,49,50,68,255);SDL_Rect h={0,0,1280,60};SDL_RenderFillRect(r,&h);
-          char b[128];snprintf(b,128,"Gemini AI - Session %d/%d",app.cur+1,app.tot);
-          txt(b,20,18,(SDL_Color){255,255,255,255});
-          int y=80;Sess*s=&app.s[app.cur];
-          for(int i=0;i<s->n&&y<540;i++){
-            Msg*m=&s->m[i];int bx=m->u?760:20;
-            SDL_Color bc=m->u?(SDL_Color){49,50,68,255}:(SDL_Color){69,71,90,255};
-            SDL_Color tc=m->u?(SDL_Color){88,166,255,255}:(SDL_Color){139,233,253,255};
-            SDL_SetRenderDrawColor(r,bc.r,bc.g,bc.b,255);SDL_Rect br={bx,y,500,80};SDL_RenderFillRect(r,&br);
-            char d[200];strncpy(d,m->t,195);d[195]=0;if(strlen(m->t)>195)strcat(d,"...");
-            txt(d,bx+15,y+15,tc);txt(m->u?"You":"Gemini",bx+15,y+55,(SDL_Color){255,255,255,255});y+=95;
-          }
-          SDL_SetRenderDrawColor(r,40,42,58,255);SDL_Rect pa={0,550,1280,170};SDL_RenderFillRect(r,&pa);
-          SDL_SetRenderDrawColor(r,79,172,254,255);SDL_RenderDrawLine(r,0,550,1280,550);
-          snprintf(b,128,"[%d/%d] %s",app.p+1,20,qs[app.p]);
-          txt(b,20,565,(SDL_Color){79,172,254,255});
-          txt("D-Pad:Select A:Send Y:New L/R:Sess ZL:Import ZR:Exp +:Exit",20,600,(SDL_Color){255,255,255,255});
-          if(app.load)txt("Waiting...",20,635,(SDL_Color){241,250,140,255});else txt(app.st,20,635,(SDL_Color){255,255,255,255});
-          SDL_RenderPresent(r);
-        }
-
-        void input(){
-          hidScanInput();u64 k=hidKeysDown(CONTROLLER_PAND_AUTO);
-          if(k&KEY_DUP){app.p=(app.p+19)%20;snprintf(app.st,256,"%s",qs[app.p]);}
-          if(k&KEY_DDOWN){app.p=(app.p+1)%20;snprintf(app.st,256,"%s",qs[app.p]);}
-          if(k&KEY_A&&!app.load){add(app.cur,qs[app.p],1);app.load=1;strcpy(app.st,"Sending...");
-            char rp[4096]={0};api(qs[app.p],rp);if(*rp)add(app.cur,rp,0);else add(app.cur,"Error",0);app.load=0;strcpy(app.st,"Done");}
-          if(k&KEY_Y&&!app.load&&app.tot<10){app.tot++;app.cur=app.tot-1;strcpy(app.st,"New session");}
-          if(k&KEY_L&&!app.load){app.cur=(app.cur-1+app.tot)%app.tot;snprintf(app.st,256,"Sess %d",app.cur+1);}
-          if(k&KEY_R&&!app.load){app.cur=(app.cur+1)%app.tot;snprintf(app.st,256,"Sess %d",app.cur+1);}
-          if(k&KEY_ZL&&!app.load){FILE*fp=fopen("switch/GeminiSwitch/import.txt","r");if(fp){char b[4096]={0};if(fgets(b,4095,fp)){b[strcspn(b,"\n")]=0;if(*b){add(app.cur,b,1);app.load=1;char r[4096]={0};api(b,r);if(*r)add(app.cur,r,0);app.load=0;}}fclose(fp);strcpy(app.st,"OK");}else strcpy(app.st,"No file");}
-          if(k&KEY_ZR&&!app.load){FILE*fp=fopen("switch/GeminiSwitch/chat_export.txt","w");if(fp){Sess*s=&app.s[app.cur];fprintf(f,"Export\n");for(int i=0;i<s->n;i++)fprintf(fp,"[%s]:%s\n\n",s->m[i].u?"User":"Gem",s->m[i].t);fclose(fp);strcpy(app.st,"Exp OK");}else strcpy(app.st,"Fail");}
-          if(k&KEY_PLUS)run=0;
-        }
-
-        int main(){
-          romfsInit();socketInitializeDefault();padConfigureInput(1,PadNpadJoyConPair);
-          if(SDL_Init(SDL_INIT_VIDEO)<0)return 1;
-          if(TTF_Init()<0){SDL_Quit();return 1;}
-          f=TTF_OpenFont("romfs:/Roboto-Regular.ttf",22);if(!f){TTF_Quit();SDL_Quit();return 1;}
-          w=SDL_CreateWindow("G",SDL_WINDOWPOS_CENTERED,SDL_WINDOWPOS_CENTERED,1280,720,SDL_WINDOW_SHOWN);
-          if(!w){TTF_CloseFont(f);TTF_Quit();SDL_Quit();return 1;}
-          r=SDL_CreateRenderer(w,-1,SDL_RENDERER_ACCELERATED|SDL_RENDERER_PRESENTVSYNC);
-          if(!r){SDL_DestroyWindow(w);TTF_CloseFont(f);TTF_Quit();SDL_Quit();return 1;}
-          memset(&app,0,sizeof(app));app.tot=1;strcpy(app.st,"A to send");
-          while(appletMainLoop()){input();render();if(!run)break;SDL_Delay(16);}
-          SDL_DestroyRenderer(r);SDL_DestroyWindow(w);TTF_CloseFont(f);TTF_Quit();SDL_Quit();socketExit();romfsExit();
-          return 0;
-        }
-        EOF
-
-    - name: Create Makefile
-      run: |
-        printf 'TARGET := GeminiSwitch\nROMFS := romfs\nCC := aarch64-none-elf-gcc\nARCH := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIC\nCFLAGS := -g -Wall -O2 $(ARCH) -D__SWITCH__\nDEVKITPRO ?= /opt/devkitpro\nSDL2 := $(DEVKITPRO)/portlibs/switch\nINCLUDE := -I$(SDL2)/include -I$(SDL2)/include/SDL2 -I$(DEVKITPRO)/libnx/include\nLIBS := -lSDL2 -lSDL2_ttf -lcurl -ljansson -lnx\nCFILES := $(wildcard *.c)\nOFILES := $(CFILES:.c=.o)\n.PHONY: all clean\nall: $(TARGET).nsp\n$(TARGET).elf: $(OFILES)\n' > Makefile
-        printf '\t$(CC) $(CFLAGS) $(OFILES) -o $@ -L$(SDL2)/lib -L$(DEVKITPRO)/libnx/lib $(LIBS)\n' >> Makefile
-        printf '\n$(TARGET).nacp:\n' >> Makefile
-        printf '\tnacptool --create "Gemini" "Google LLC" "1.0.0" $@ --titleid="0100ABCD12340000"\n' >> Makefile
-        printf '\n$(TARGET).nro: $(TARGET).elf $(TARGET).nacp\n' >> Makefile
-        printf '\telf2nro $< $@ $(TARGET).nacp --romfsdir=$(ROMFS)\n' >> Makefile
-        printf '\n$(TARGET).nsp: $(TARGET).nro\n' >> Makefile
-        printf '\tmkdir -p exefs && cp $(TARGET).nro exefs/main.nro && npdmtool --create exefs/main.npdm && nspBuild -i exefs -o $@\n' >> Makefile
-        printf '\n%%.o: %%.c\n' >> Makefile
-        printf '\t$(CC) $(CFLAGS) $(INCLUDE) -c $< -o $@\n' >> Makefile
-        printf '\nclean:\n' >> Makefile
-        printf '\trm -f *.o *.elf *.nacp *.nro *.nsp && rm -rf exefs\n' >> Makefile
-
-    - name: Build
-      run: |
-        export DEVKITPRO=/opt/devkitpro
-        export PATH=$DEVKITPRO/devkitA64/bin:$PATH
-        make -j$(nproc)
-
-    - name: Check
-      run: ls -la *.nsp 2>/dev/null && echo "SUCCESS" || echo "FAILED"
-
-    - name: Upload
-      uses: actions/upload-artifact@v4
-      with:
-        name: nsp
-        path: "*.nsp"
-        
+      - name: Upload NSP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gemini.nsp
+          path: Gemini.nsp
