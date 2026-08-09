@@ -1,4 +1,4 @@
-name: Gemini Switch NSP (Full)
+name: Gemini Switch NSP
 
 on:
   push:
@@ -17,7 +17,7 @@ jobs:
       - name: Install Dependencies
         run: |
           dkp-pacman -Sy --noconfirm
-          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-curl switch-jansson switch-audin --noconfirm
+          dkp-pacman -S switch-sdl2 switch-sdl2_ttf switch-curl switch-jansson --noconfirm
 
       - name: Download Font
         run: |
@@ -31,7 +31,7 @@ jobs:
             apt-get update -qq && apt-get install -y -qq imagemagick
             convert icon.png -resize 256x256! -background white -flatten icon.jpg
           else
-            # Default icon (a simple gradient-like JPEG in base64)
+            # Default icon (base64 encoded JPEG)
             echo "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjL/wAARCAAeAB4DASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYI0RVNfSVJCc0oNKCk6O0xNTk9SVFdVYSFk5O/9oADAMBAAIRAxEAPwD3+iiigAooooAKKKKACiiigAooooA//Z" | base64 -d > icon.jpg
           fi
 
@@ -155,7 +155,7 @@ jobs:
               SDL_RenderClear(renderer);
 
               drawRect(renderer, 0,0,SCREEN_W,50,0x16213E);
-              drawTextWrapped(renderer, font, 20,10,200,"Gemini AI",TEXT_WHITE);
+              drawTextWrapped(renderer, font, 20,10,200,"Gemini",TEXT_WHITE);
               char hints[128];
               snprintf(hints, sizeof(hints), "A:Type X:Voice Y:New L/R:Chat ZL:Import ZR:Export +:Exit");
               drawTextWrapped(renderer, fontSmall, 150,15,600,hints,0xAAAAAA);
@@ -531,8 +531,8 @@ jobs:
           endif
           include $(DEVKITPRO)/libnx/switch_rules
 
-          APP_TITLE   := Gemini for Switch
-          APP_AUTHOR  := amirxklazer
+          APP_TITLE   := Gemini
+          APP_AUTHOR  := Google LLC
           APP_VERSION := 1.0
 
           TARGET      := GeminiSwitch
