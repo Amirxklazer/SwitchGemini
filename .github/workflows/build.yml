@@ -16,8 +16,8 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install nx.js locally
-        run: npm install nxjs
+      - name: Install nx.js globally
+        run: npm install -g nxjs
 
       # ---- Create the HTML and JS files ----
       - name: Create index.html
@@ -135,14 +135,15 @@ jobs:
           renderChat();
           EOF
 
-      # ---- Build the NRO with npx ----
+      # ---- Build the NRO ----
       - name: Build NRO with nx.js
         run: |
-          # If icon.png exists, include it; otherwise skip the flag
+          # Add global npm bin to PATH so 'nxjs' is found
+          export PATH="$PATH:$(npm prefix -g)/bin"
           if [ -f icon.png ]; then
-            npx nxjs --title "Gemini" --author "Google LLC" --icon icon.png --output Gemini.nro
+            nxjs --title "Gemini" --author "Google LLC" --icon icon.png --output Gemini.nro
           else
-            npx nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro
+            nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro
           fi
 
       - name: Upload NRO Artifact
