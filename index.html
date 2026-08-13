@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Gemini Switch</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #1a1a2e; color: white; font-family: system-ui; }
+    #app { display: flex; flex-direction: column; height: 100vh; padding: 20px; box-sizing: border-box; }
+    #chat { flex: 1; overflow-y: auto; margin-bottom: 10px; }
+    .msg { margin: 5px 0; padding: 8px 12px; border-radius: 10px; max-width: 80%; }
+    .user { background: #0066cc; align-self: flex-end; }
+    .ai { background: #2d2d44; align-self: flex-start; }
+    #input-area { display: flex; gap: 10px; }
+    #question-list { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+    .q-btn { background: #333; border: none; color: white; padding: 6px 12px; border-radius: 20px; cursor: pointer; }
+    .q-btn.selected { background: #ffd700; color: #000; }
+    #status { margin-top: 10px; font-size: 0.8rem; color: #888; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="chat"></div>
+    <div id="question-list"></div>
+    <div id="input-area">
+      <button id="send-btn">Send</button>
+      <button id="new-chat">New Chat</button>
+      <button id="export-btn">Export</button>
+    </div>
+    <div id="status">Chat 1/1</div>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>
