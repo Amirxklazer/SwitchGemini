@@ -16,10 +16,10 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install nx.js
-        run: npm install -g nxjs
+      - name: Install nx.js locally
+        run: npm install nxjs
 
-      # ---- Create the HTML and JS files (you can also have them in your repo) ----
+      # ---- Create the HTML and JS files ----
       - name: Create index.html
         run: |
           cat << 'EOF' > index.html
@@ -135,12 +135,15 @@ jobs:
           renderChat();
           EOF
 
-      # ---- Build the NRO ----
+      # ---- Build the NRO with npx ----
       - name: Build NRO with nx.js
         run: |
-          # If you have an icon.png, it will be used; otherwise a default is auto-generated.
-          nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro \
-               --icon icon.png 2>/dev/null || nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro
+          # If icon.png exists, include it; otherwise skip the flag
+          if [ -f icon.png ]; then
+            npx nxjs --title "Gemini" --author "Google LLC" --icon icon.png --output Gemini.nro
+          else
+            npx nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro
+          fi
 
       - name: Upload NRO Artifact
         uses: actions/upload-artifact@v4
