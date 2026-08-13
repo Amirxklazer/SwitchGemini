@@ -14,19 +14,19 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Install system dependencies (ImageMagick, git, unzip)
+      - name: Install system dependencies (ImageMagick, unzip)
         run: |
           apt-get update -qq
-          apt-get install -y imagemagick git unzip
+          apt-get install -y imagemagick unzip
 
       - name: Install devkitPro packages
         run: |
           dkp-pacman -Sy --noconfirm
           dkp-pacman -S switch-dev --noconfirm
 
-      - name: Download HTML-Video-Template-NX (ZIP)
+      - name: Download HTML-Video-Template-NX (fixed URL)
         run: |
-          curl -L https://github.com/XorTroll/HTML-Video-Template-NX/archive/refs/heads/main.zip -o template.zip
+          curl -L https://github.com/SuperOkazaki/HTML-Video-Template-NX/archive/refs/heads/main.zip -o template.zip
           unzip template.zip
           mv HTML-Video-Template-NX-main/* .
           rm -rf HTML-Video-Template-NX-main template.zip
