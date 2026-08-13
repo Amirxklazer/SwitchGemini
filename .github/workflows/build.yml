@@ -16,10 +16,9 @@ jobs:
         with:
           node-version: 18
 
-      - name: Install nx.js globally
-        run: npm install -g nxjs
+      - name: Install @nx.js/cli locally
+        run: npm install @nx.js/cli
 
-      # ---- Create the HTML and JS files ----
       - name: Create index.html
         run: |
           cat << 'EOF' > index.html
@@ -135,16 +134,11 @@ jobs:
           renderChat();
           EOF
 
-      # ---- Build the NRO ----
-      - name: Build NRO with nx.js
+      - name: Build NRO with nx.js CLI
         run: |
-          # Add global npm bin to PATH so 'nxjs' is found
-          export PATH="$PATH:$(npm prefix -g)/bin"
-          if [ -f icon.png ]; then
-            nxjs --title "Gemini" --author "Google LLC" --icon icon.png --output Gemini.nro
-          else
-            nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro
-          fi
+          # Use npx to run the local installation
+          npx nxjs --title "Gemini" --author "Google LLC" --output Gemini.nro \
+            $( [ -f icon.png ] && echo "--icon icon.png" )
 
       - name: Upload NRO Artifact
         uses: actions/upload-artifact@v4
