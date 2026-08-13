@@ -19,12 +19,9 @@ jobs:
           apt-get update -qq
           apt-get install -y imagemagick unzip
 
-      - name: Install devkitPro packages
-        run: |
-          dkp-pacman -Sy --noconfirm
-          dkp-pacman -S switch-dev --noconfirm
+      # NO dkp-pacman – container already has switch-dev
 
-      - name: Download HTML-Video-Template-NX (fixed URL)
+      - name: Download HTML-Video-Template-NX
         run: |
           curl -L https://github.com/SuperOkazaki/HTML-Video-Template-NX/archive/refs/heads/main.zip -o template.zip
           unzip template.zip
