@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install devkitPro
-        uses: devkitPro/installer-action@v1
+        uses: devkitPro/installer-action@v1   # <-- capital P
         with:
           pacman-packages: switch-dev
 
@@ -25,15 +25,125 @@ jobs:
       - name: Write index.html & app.js
         run: |
           cat << 'EOF' > html/index.html
-          <!-- full HTML, same as before -->
-          EOF
-          cat << 'EOF' > html/app.js
-          // full app.js, same as before
+          <!DOCTYPE html>
+          <html>
+          <head><meta charset="UTF-8"><title>Gemini</title>
+          <style>
+            body { margin:0; background:#1a1a2e; color:#fff; font-family:sans-serif; display:flex; justify-content:center; align-items:center; height:100vh; }
+            #app { width:90%; max-width:800px; }
+            #chat { height:60vh; overflow-y:auto; background:#16213e; padding:10px; border-radius:10px; margin-bottom:10px; }
+            .msg { padding:8px 12px; margin:4px 0; border-radius:8px; max-width:80%; }
+            .user { background:#0066cc; align-self:flex-end; }
+            .ai { background:#2d2d44; align-self:flex-start; }
+            #q-list { display:flex; flex-wrap:wrap; gap:5px; margin:10px 0; }
+            .q-btn { background:#333; color:#fff; border:none; padding:6px 12px; border-radius:20px; cursor:pointer; }
+            .q-btn.selected { background:#ffd700; color:#000; }
+            #controls button { margin:5px; padding:8px 16px; border-radius:8px; border:none; background:#0066cc; color:#fff; }
+          </style>
+          </head>
+          <body>
+          <div id="app">
+            <div id="chat"></div>
+            <div id="q-list"></div>
+            <div id="controls">
+              <button id="sendBtn">Send</button>
+              <button id="newBtn">New Chat</button>
+              <button id="exportBtn">Export</button>
+            </div>
+            <div id="status" style="margin-top:8px;color:#888;"></div>
+          </div>
+          <script src="app.js"></script>
+          </body>
+          </html>
           EOF
 
-      - name: Convert or create icon
+      - name: Write app.js
         run: |
-          if [ -f icon.png ]; then convert icon.png -resize 256x256 icon.jpg; else convert -size 256x256 xc:royalblue icon.jpg; fi
+          cat << 'EOF' > html/app.js
+          const API_KEY = "AQ.Ab8RN6KF_Oe4HJByBB_IUhiCDbjHIl8m7jIEoi8zF2BzHu6hCg";
+          const API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=";
+          const presetQuestions = [
+            "What is the meaning of life?",
+            "Explain quantum computing.",
+            "Give me a chocolate cake recipe.",
+            "Write a haiku about the ocean.",
+            "What are the benefits of exercise?",
+            "Tell me a joke."
+          ];
+          let chats = [{ messages: [] }];
+          let currentChat = 0, selectedQuestion = 0;
+          const chatDiv = document.getElementById('chat');
+          const qDiv = document.getElementById('q-list');
+          const statusDiv = document.getElementById('status');
+
+          function renderQuestions() {
+            qDiv.innerHTML = '';
+            presetQuestions.forEach((q, i) => {
+              const btn = document.createElement('button');
+              btn.textContent = q;
+              btn.className = 'q-btn' + (i === selectedQuestion ? ' selected' : '');
+              btn.onclick = () => { selectedQuestion = i; renderQuestions(); };
+              qDiv.appendChild(btn);
+            });
+          }
+
+          function renderChat() {
+            const chat = chats[currentChat];
+            chatDiv.innerHTML = '';
+            chat.messages.forEach(msg => {
+              const div = document.createElement('div');
+              div.className = 'msg ' + (msg.role === 'user' ? 'user' : 'ai');
+              div.textContent = msg.text;
+              chatDiv.appendChild(div);
+            });
+            chatDiv.scrollTop = chatDiv.scrollHeight;
+            statusDiv.textContent = `Chat ${currentChat+1}/${chats.length}`;
+          }
+
+          async function sendMessage(text) {
+            const chat = chats[currentChat];
+            chat.messages.push({ role: 'user', text });
+            renderChat();
+            try {
+              const res = await fetch(API_URL + API_KEY, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contents: [{ parts: [{ text }] }] })
+              });
+              const data = await res.json();
+              const reply = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Error';
+              chat.messages.push({ role: 'assistant', text: reply });
+            } catch(e) {
+              chat.messages.push({ role: 'assistant', text: 'Error: ' + e.message });
+            }
+            renderChat();
+          }
+
+          document.getElementById('sendBtn').onclick = () => sendMessage(presetQuestions[selectedQuestion]);
+          document.getElementById('newBtn').onclick = () => {
+            if (chats.length < 10) { chats.push({ messages: [] }); currentChat = chats.length-1; renderChat(); renderQuestions(); }
+          };
+          document.getElementById('exportBtn').onclick = () => {
+            const text = chats[currentChat].messages.map(m => m.role + ': ' + m.text).join('\n');
+            alert(text);
+          };
+
+          document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowLeft' && currentChat > 0) { currentChat--; renderChat(); }
+            if (e.key === 'ArrowRight' && currentChat < chats.length-1) { currentChat++; renderChat(); }
+          });
+
+          renderQuestions();
+          renderChat();
+          EOF
+
+      - name: Create icon
+        run: |
+          if [ -f icon.png ]; then
+            convert icon.png -resize 256x256 -quality 90 icon.jpg
+          else
+            convert -size 256x256 xc:royalblue -quality 90 icon.jpg
+          fi
 
       - name: Build
         run: make
