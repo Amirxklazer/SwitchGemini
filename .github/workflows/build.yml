@@ -14,21 +14,22 @@ jobs:
       - name: Checkout Source
         uses: actions/checkout@v4
 
-      - name: Install system dependencies (ImageMagick, git)
+      - name: Install system dependencies (ImageMagick, git, unzip)
         run: |
           apt-get update -qq
-          apt-get install -y imagemagick git
+          apt-get install -y imagemagick git unzip
 
       - name: Install devkitPro packages
         run: |
           dkp-pacman -Sy --noconfirm
           dkp-pacman -S switch-dev --noconfirm
 
-      - name: Clone HTML-Video-Template-NX
+      - name: Download HTML-Video-Template-NX (ZIP)
         run: |
-          git clone --depth 1 https://github.com/XorTroll/HTML-Video-Template-NX.git template
-          cp -r template/* .
-          rm -rf template
+          curl -L https://github.com/XorTroll/HTML-Video-Template-NX/archive/refs/heads/main.zip -o template.zip
+          unzip template.zip
+          mv HTML-Video-Template-NX-main/* .
+          rm -rf HTML-Video-Template-NX-main template.zip
 
       - name: Write index.html and app.js (Gemini UI)
         run: |
